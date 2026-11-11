@@ -12,3 +12,4 @@ neardev/
 *.key
 *.pem
 __pycache__/
+contract/.cargo/
