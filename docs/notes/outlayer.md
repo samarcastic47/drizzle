@@ -462,3 +462,13 @@ So: 64 hex chars, case-insensitive comparison, of the exact `.wasm` you uploaded
 **Two practical notes for the Drizzle oracle:** (1) add `outlayer_request_id` to the module's JSON so the attested output hash commits to it, but keep writing `RoundLog.outlayer_request_id` from the keeper's tx-log parse — the contract can't read it; (2) `NEAR_BLOCK_TIMESTAMP`/`NEAR_BLOCK_HEIGHT` are available if you ever want the module to refuse stale blocks, but per `https://app.outlayer.ai/docs/tee-attestation` §"Data Freshness" OutLayer does not enforce source freshness — the hour check must stay in the WASM or in `on_weather`.
 
 > **Orchestrator note:** the guest echoes `NEAR_REQUEST_ID` in its stdout, and the stdout is exactly what `on_weather` receives. So the contract **does** learn the request id from the payload, and `RoundLog.outlayer_request_id` is filled on-chain.
+
+---
+
+## 11. WP-3 live result (2026-11-11, orchestrator)
+
+- Upload: `outlayer upload oracle/drizzle-oracle.wasm` → sha256 `7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b`, URL `https://test.fastfs.io/drizzle-dev.testnet/outlayer.testnet/7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b.wasm` (tx `8yyX5RcsHRkcMGMZvpTvY8mTv75KMCpn4jyB8B8PPRsS`).
+- Manual `request_execution` (WasmUrl source, limits 5e9 instr / 64 MB / 30 s, `response_format:"Json"`, 0.02 NEAR attached, 300 Tgas): tx `7T2fBww6cqcMJQw7RNoevLT7oVCZPmJSVKLPtjYyFaoY`, request_id 22023.
+  Return value: `{"hour":497294,"mm_tenths":[0,0,3,0,0,0,0,0,0,0,0,0],"outlayer_request_id":"22023","source":"open-meteo"}`. This matches the local wasmtime run and `oracle/verify.sh`.
+- Cost: OutLayer charged 0.0011776 NEAR (861 ms run + 915 ms first compile) and refunded the rest. Total account delta, incl. 8.0 Tgas of gas: **0.00191 NEAR**.
+- **Attestation link:** `/attestation/{id}` takes the OutLayer **job_id**, not the on-chain request_id, and defaults to mainnet. Mapping: `GET https://testnet-api.outlayer.ai/public/jobs?user_account_id=<tx signer>&limit=100` → the entry with `request_id == <id>` and `job_type == "execute"` → `job_id` (here 57705). Link: `https://app.outlayer.ai/attestation/57705?network=testnet`. The page shows "Executed binary 7d708ee7…" (= the pinned hash), the input/output hashes, the enclave measurement and the request tx. Filtering by `request_id=`/`transaction_hash=` is ignored by the API; `user_account_id=` and `job_id=` work.
