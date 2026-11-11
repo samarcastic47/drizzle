@@ -111,12 +111,12 @@ export function App() {
 
       <footer className="site-footer">
         <p>
-          Drizzle ☔ · NEP-141 on NEAR testnet · weather read inside an OutLayer Intel TDX enclave · the contract
-          account holds no keys
+          Drizzle ☔ · NEP-141 on NEAR testnet · weather read inside an OutLayer Intel TDX enclave · no admin
+          methods; see the key check in About
         </p>
         <p className="muted tiny">
-          data: Open-Meteo (CC-BY 4.0) · replay 1 round = 1 real hour · not financial advice, it is a rain
-          simulator with a token attached
+          data: Open-Meteo (CC-BY 4.0) · replay: 1 round = 60 s of a real past hour · live: 1 round = 1 real
+          hour · not financial advice, it is a rain simulator with a token attached
         </p>
       </footer>
     </div>

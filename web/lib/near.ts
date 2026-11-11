@@ -2,7 +2,7 @@
 
 import type { AccessKeyInfo, U128 } from './types';
 
-export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || 'https://rpc.testnet.near.org';
+export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || 'https://test.rpc.fastnear.com';
 
 function decodeResult(result: unknown): string {
   if (typeof result === 'string') {
