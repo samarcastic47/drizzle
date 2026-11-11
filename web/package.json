@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "mkdir -p public && cp ../docs/supply.svg public/supply.svg",
     "build": "next build",
     "start": "npx serve out -l 4321",
     "typecheck": "tsc --noEmit"

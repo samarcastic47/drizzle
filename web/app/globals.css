@@ -916,11 +916,18 @@ input:focus-visible {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* The chart is the widest thing in About: give it the whole row and cap its width. */
+.about > .card:last-child {
+  grid-column: 1 / -1;
+}
+
 .supply-chart {
   width: 100%;
+  max-width: 900px;
   border-radius: 12px;
-  margin-top: 8px;
+  margin: 12px auto 0;
   display: block;
+  background: #fff;
 }
 
 /* ---------------- verify drawer ---------------- */

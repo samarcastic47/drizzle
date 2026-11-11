@@ -13,8 +13,10 @@ import type {
 } from './types';
 
 export const GAS_100_TGAS = '100000000000000';
-export const CLAIM_SEED_DEPOSIT: U128 = '12500000000000000000000'; // 0.0125 NEAR
 export const ONE_YOCTO: U128 = '1';
+/** NEP-145 views used to size the storage deposit for claim_seed. */
+export const STORAGE_BALANCE_BOUNDS = 'storage_balance_bounds';
+export const STORAGE_BALANCE_OF = 'storage_balance_of';
 
 export interface TxRequest {
   contractId: string;
@@ -105,8 +107,20 @@ export class RpcApi implements DrizzleApi {
     return ftBalanceOf(this.contractId, accountId);
   }
 
-  claimSeed() {
-    return this.sign({ methodName: 'claim_seed', args: {}, deposit: CLAIM_SEED_DEPOSIT });
+  /**
+   * claim_seed is payable: attach the NEP-145 `min` when this account is not
+   * registered for storage yet, otherwise attach nothing (no hardcoded amount).
+   */
+  async claimSeed() {
+    const accountId = this.account ?? this.signer.accountId();
+    if (!accountId) throw new Error('connect a wallet first');
+    const [bounds, stored] = await Promise.all([
+      view<{ min: U128; max: U128 | null }>(this.contractId, STORAGE_BALANCE_BOUNDS),
+      view<{ total: U128; available: U128 } | null>(this.contractId, STORAGE_BALANCE_OF, {
+        account_id: accountId,
+      }),
+    ]);
+    await this.sign({ methodName: 'claim_seed', args: {}, deposit: stored ? '0' : bounds.min });
   }
 
   plant(city: number, amount: U128) {

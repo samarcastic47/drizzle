@@ -89,7 +89,10 @@ export interface RoundLog {
   sprouted: U128[];
   keeper: string;
   keeper_tip: U128;
+  /** Echoed by the oracle from NEAR_REQUEST_ID (part of the attested output). */
   outlayer_request_id: string | null;
+  /** Block of the tick() transaction that requested this reading. */
+  tick_block_height: number;
   settled_ts: number;
 }
 

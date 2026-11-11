@@ -8,3 +8,4 @@ next-env.d.ts
 .env.local
 .env*.local
 pnpm-debug.log*
+public/supply.svg

@@ -25,6 +25,7 @@ import rainData from '../data/rain-60d.json';
 
 const ROUND_SECONDS = 60;
 const HISTORY_ROUNDS = 45;
+const MOCK_KEEPER = 'drizzle-dev.testnet';
 const AUTO_KEEPER_GRACE_MS = 6_000;
 const IN_FLIGHT_MS = 2_600;
 const EVAP_BPS = 10;
@@ -107,6 +108,7 @@ interface InternalLog {
   keeper: string;
   keeperTip: bigint;
   outlayerRequestId: string;
+  tickBlockHeight: number;
   settledTs: number;
 }
 
@@ -123,15 +125,16 @@ function noise(round: number, salt: number): number {
   return (h >>> 0) / 4294967296;
 }
 
+/**
+ * OutLayer request ids are plain integers. The mock mirrors the real replay keeper
+ * (drizzle-dev.testnet), whose ids around 22023 map to real jobs.
+ */
 function mockRequestId(round: number): string {
-  let out = '';
-  for (let i = 0; i < 4; i += 1) {
-    out += Math.floor(noise(round, 700 + i) * 0xffffffff)
-      .toString(16)
-      .padStart(8, '0');
-  }
-  return `rq_${round.toString(16).padStart(6, '0')}${out}`;
+  return String(22000 + round);
 }
+
+/** Blocks are ~1s; anchor the mock ledger near the current testnet height. */
+const MOCK_BLOCK_BASE = 277_000_000;
 
 /** One mock instance per contract id, so the Replay/Live toggle keeps separate state. */
 const instances = new Map<string, MockApi>();
@@ -466,9 +469,10 @@ export class MockApi implements DrizzleApi {
       burned,
       jackpotPaid,
       sprouted,
-      keeper: 'keeper.testnet',
+      keeper: MOCK_KEEPER,
       keeperTip: drizzle(KEEPER_TIP),
       outlayerRequestId: mockRequestId(round),
+      tickBlockHeight: MOCK_BLOCK_BASE + (this.dueAt(round) - this.genesis),
       settledTs: this.dueAt(round) + 1 + Math.floor(noise(round, 55) * 4),
     });
     this.minted += drizzle(KEEPER_TIP);
@@ -571,6 +575,7 @@ function toRoundLog(log: InternalLog): RoundLog {
     keeper: log.keeper,
     keeper_tip: log.keeperTip.toString(),
     outlayer_request_id: log.outlayerRequestId,
+    tick_block_height: log.tickBlockHeight,
     settled_ts: log.settledTs,
   };
 }
