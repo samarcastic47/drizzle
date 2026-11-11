@@ -87,9 +87,11 @@ pub struct Contract {
     pub seeded_count: u64,
     pub rounds_settled: u64,
 
-    /// Bytes occupied by one account's 12 `UserCity` entries plus the 12 bucket
-    /// entries it can pin (measured in `new`).
+    /// Bytes occupied by one account's 12 `UserCity` entries plus the 12 settled
+    /// bucket entries it can pin (measured in `new`).
     pub user_extra_storage: u64,
+    /// Bytes of one `seeded` entry (kept forever, so it is part of the bond).
+    pub seeded_storage: u64,
 }
 
 #[near]
@@ -105,6 +107,7 @@ impl Contract {
 
         let mut users: LookupMap<(AccountId, u8), UserCity> = LookupMap::new(b"us".to_vec());
         let mut buckets: LookupMap<(u64, u8), Bucket> = LookupMap::new(b"bk".to_vec());
+        let mut seeded: LookupSet<AccountId> = LookupSet::new(b"s".to_vec());
         // Measure the storage one account's 12 lazily-created position entries and
         // the 12 buckets it can pin occupy, so `storage_balance_bounds().min`
         // covers the worst case without on_weather ever paying for new storage.
@@ -112,19 +115,32 @@ impl Contract {
         let before = env::storage_usage();
         for city in 0..NUM_CITIES {
             users.insert(&(probe.clone(), city as u8), &UserCity::default());
-            buckets.insert(&(0u64, city as u8), &Bucket::default());
+            // Worst case: a settled bucket (ratio filled, epoch bumped) with a holder.
+            buckets.insert(
+                &(0u64, city as u8),
+                &Bucket {
+                    holders: 1,
+                    ratio: Some((u128::MAX, u128::MAX)),
+                    epoch: u32::MAX,
+                },
+            );
         }
         let user_extra_storage = env::storage_usage() - before;
+        // `seeded` is kept forever, so the bond must also cover its entry.
+        let before_seeded = env::storage_usage();
+        seeded.insert(&probe);
+        let seeded_storage = env::storage_usage() - before_seeded;
         for city in 0..NUM_CITIES {
             users.remove(&(probe.clone(), city as u8));
             buckets.remove(&(0u64, city as u8));
         }
+        seeded.remove(&probe);
 
         Self {
             ft,
             cities: vec![CityState::default(); NUM_CITIES],
             users,
-            seeded: LookupSet::new(b"s".to_vec()),
+            seeded,
             round_logs: LookupMap::new(b"rl".to_vec()),
             buckets,
             next_round: 0,
@@ -135,6 +151,7 @@ impl Contract {
             seeded_count: 0,
             rounds_settled: 0,
             user_extra_storage,
+            seeded_storage,
             cfg: config,
         }
     }
@@ -174,6 +191,7 @@ impl Contract {
     pub fn plant(&mut self, city: u8, amount: U128) {
         assert_one_yocto();
         self.assert_city(city);
+        self.assert_round_open();
         let amount = amount.0;
         require!(
             amount >= MIN_PLANT,
@@ -246,6 +264,7 @@ impl Contract {
     pub fn uproot(&mut self, city: u8, shares: Option<U128>) -> U128 {
         assert_one_yocto();
         self.assert_city(city);
+        self.assert_round_open();
         let account_id = env::predecessor_account_id();
         let key = (account_id.clone(), city);
         let mut position = self.users.get(&key).unwrap_or_default();
@@ -277,6 +296,10 @@ impl Contract {
         if shares.is_none() && position.pending > 0 {
             let returned_pending = position.pending;
             pool::unplant_pending(&mut pool, returned_pending);
+            // The pending never sprouted, so release its (unsettled) bucket holder.
+            if position.pending_round >= self.next_round {
+                self.bucket_remove_holder(position.pending_round, city);
+            }
             position.pending = 0;
             position.pending_round = 0;
             credit += returned_pending;
@@ -710,6 +733,21 @@ impl Contract {
         require!((city as usize) < NUM_CITIES, "invalid city");
     }
 
+    /// Live games freeze positions once the round's hour has closed: the weather is
+    /// public at that point, so burning (or entering) before settlement would let
+    /// active holders dodge evaporation. Replay is exempt (its look-ahead is
+    /// inherent and documented); `rain_dance` is never frozen (it cannot profit).
+    fn assert_round_open(&self) {
+        if self.cfg.replay {
+            return;
+        }
+        let close = (self.cfg.hour_for_round(self.next_round) + 1) * 3600;
+        require!(
+            env::block_timestamp() / 1_000_000_000 < close,
+            "round closing: wait for settlement"
+        );
+    }
+
     /// Lazily converts settled pending into shares at the stored round ratio.
     /// Clears shares that belong to a previous city epoch (reset pools).
     fn sync_epoch(&self, position: &mut UserCity, city: u8) {
@@ -812,7 +850,10 @@ impl Contract {
     /// bucket entries.
     fn storage_min(&self) -> NearToken {
         env::storage_byte_cost()
-            .saturating_mul((self.ft.account_storage_usage + self.user_extra_storage) as u128)
+            .saturating_mul(
+                (self.ft.account_storage_usage + self.user_extra_storage + self.seeded_storage)
+                    as u128,
+            )
     }
 
     /// Registers `account_id` when needed, enforcing (and refunding) the bond.
@@ -997,10 +1038,15 @@ impl StorageManagement for Contract {
             }
             .emit();
         }
-        // `seeded` is kept on purpose: re-registering must not allow a second seed.
-        let refund = self
-            .storage_min()
-            .saturating_add(NearToken::from_yoctonear(1));
+        // `seeded` is kept on purpose: re-registering must not allow a second seed,
+        // so its storage stake is not refunded.
+        let mut refund = self.storage_min();
+        if self.seeded.contains(&account_id) {
+            refund = refund.saturating_sub(
+                env::storage_byte_cost().saturating_mul(self.seeded_storage as u128),
+            );
+        }
+        let refund = refund.saturating_add(NearToken::from_yoctonear(1));
         Promise::new(account_id).transfer(refund).detach();
         true
     }
@@ -1664,6 +1710,15 @@ mod tests {
             "unexpected storage bond: {} yocto",
             min.as_yoctonear()
         );
+        // The bond covers the FT row, 12 positions, 12 settled buckets and `seeded`.
+        let covered = (c.ft.account_storage_usage
+            + c.user_extra_storage
+            + c.seeded_storage) as u128;
+        assert!(c.seeded_storage > 0);
+        assert_eq!(
+            min.as_yoctonear(),
+            env::storage_byte_cost().as_yoctonear() * covered
+        );
         // Less than the bond: rejected before any state change.
         set_env("alice.testnet", GENESIS, min.as_yoctonear() / 2);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1756,6 +1811,23 @@ mod tests {
         // 100% evaporation would zero a pool while its shares still exist.
         let mut cfg = test_config();
         cfg.evap_bps = 10_000;
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        // MIN_PLANT / MIN_SHARES_OUT assume 18 decimals.
+        let mut cfg = test_config();
+        cfg.decimals = 17;
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        let mut cfg = test_config();
+        cfg.emission_per_round = U128(0);
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        let mut cfg = test_config();
+        cfg.oracle.deposit = U128(0);
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        let mut cfg = test_config();
+        cfg.seed_amount = U128(MIN_PLANT - 1);
         assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
     }
 
@@ -2049,6 +2121,89 @@ mod tests {
         assert_eq!(planters(&c, 0), 0);
         assert_eq!(c.cities[0].value, 0);
         assert_invariants(&c, &u);
+    }
+
+    // ------------------------------------------------------------ S1: bucket release
+
+    #[test]
+    fn uproot_before_settlement_releases_the_bucket() {
+        let mut c = setup();
+        seed(&mut c, "alice.testnet", GENESIS);
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        assert_eq!(c.buckets.get(&(0, 0)).unwrap().holders, 1);
+
+        assert_eq!(uproot(&mut c, "alice.testnet", 0, None, GENESIS + 2), DEC);
+        assert!(c.buckets.get(&(0, 0)).is_none(), "cancelled plant leaked a bucket");
+
+        // Even after unregistering: the bucket is gone and `seeded` is retained.
+        set_env("alice.testnet", GENESIS + 3, 1);
+        assert!(c.storage_unregister(Some(true)));
+        assert!(c.seeded.contains(&acct("alice.testnet")));
+        assert!(c.buckets.get(&(0, 0)).is_none());
+    }
+
+    #[test]
+    fn uproot_none_keeps_a_bucket_shared_with_another_planter() {
+        let mut c = setup();
+        let u = users();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        plant(&mut c, "bob.testnet", 0, DEC, GENESIS + 2);
+        assert_eq!(c.buckets.get(&(0, 0)).unwrap().holders, 2);
+
+        assert_eq!(uproot(&mut c, "alice.testnet", 0, None, GENESIS + 3), DEC);
+        assert_eq!(c.buckets.get(&(0, 0)).unwrap().holders, 1);
+
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        let bucket = c.buckets.get(&(0, 0)).unwrap();
+        assert_eq!(bucket.ratio, Some((DEC, DEC)));
+        assert_eq!(bucket.holders, 1);
+
+        // Bob still sprouted correctly despite the shared bucket.
+        assert_eq!(uproot(&mut c, "bob.testnet", 0, None, GENESIS + 70), DEC);
+        assert!(c.buckets.get(&(0, 0)).is_none());
+        assert_invariants(&c, &u);
+    }
+
+    // ------------------------------------------------------------ S2: live freeze
+
+    #[test]
+    fn live_mode_freezes_plant_and_uproot_after_the_hour_closes() {
+        reset_storage();
+        set_env("alice.testnet", 1_799_000_000, 0);
+        let mut cfg = test_config();
+        cfg.replay = false;
+        cfg.replay_hours = 0;
+        cfg.first_hour = 500_000;
+        let mut c = Contract::new(cfg);
+        let close = (500_000 + 1) * 3600;
+
+        let min = c.storage_balance_bounds().min.as_yoctonear();
+        set_env("alice.testnet", close - 1, min);
+        c.claim_seed();
+        set_env("alice.testnet", close - 1, 1);
+        c.plant(0, U128(DEC));
+
+        set_env("alice.testnet", close, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.plant(1, U128(DEC));
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("round closing"));
+
+        set_env("alice.testnet", close, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.uproot(0, None);
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("round closing"));
+
+        // Replay is exempt at the same wall clock.
+        let mut r = setup();
+        seed(&mut r, "alice.testnet", close);
+        plant(&mut r, "alice.testnet", 0, DEC, close);
+        assert_eq!(r.cities[0].pending_total, DEC);
     }
 
     #[test]

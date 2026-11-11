@@ -106,7 +106,17 @@ impl Config {
             "config: rain threshold must be <= storm cap"
         );
         assert!(self.round_seconds > 0, "config: round_seconds must be > 0");
-        assert!(self.decimals > 0, "config: decimals must be > 0");
+        // MIN_PLANT / MIN_SHARES_OUT are expressed in 18-decimal base units.
+        assert_eq!(self.decimals, 18, "config: decimals must be 18");
+        assert!(
+            self.emission_per_round.0 > 0,
+            "config: emission_per_round must be > 0"
+        );
+        assert!(self.oracle.deposit.0 > 0, "config: oracle.deposit must be > 0");
+        assert!(
+            self.seed_amount.0 >= crate::MIN_PLANT,
+            "config: seed_amount must be at least MIN_PLANT"
+        );
         if self.replay {
             assert!(
                 self.replay_hours > 0,

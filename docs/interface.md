@@ -5,14 +5,14 @@ All `U128` values are JSON decimal strings. All timestamps are unix **seconds** 
 ## Change methods
 | Method | Deposit | Args | Notes |
 |---|---|---|---|
-| `claim_seed()` | `storage_balance_bounds().min` (0.02706 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
-| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | `amount >= 1e18` (1 DRIZZLE); rejected when the worst-case post-settlement price would mint < 1e6 shares (`"city share price too high…"`). Moves balance → user pending; sprouts after round `next_round` settles |
-| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). A partial uproot must leave 0 shares or >= 1 DRIZZLE of value, else `"remaining stake below minimum; uproot all"`. Returns U128 credited |
-| `rain_dance(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Burns from balance, adds to jackpot |
+| `claim_seed()` | `storage_balance_bounds().min` (0.03199 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
+| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | `amount >= 1e18` (1 DRIZZLE); rejected when the worst-case post-settlement price would mint < 1e6 shares (`"city share price too high…"`). Moves balance → user pending; sprouts after round `next_round` settles. Live mode only: panics `"round closing: wait for settlement"` once `now >= (hour_for_round(next_round)+1)*3600` (replay is exempt) |
+| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). A partial uproot must leave 0 shares or >= 1 DRIZZLE of value, else `"remaining stake below minimum; uproot all"`. Same live-mode close freeze as `plant`. Returns U128 credited |
+| `rain_dance(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Burns from balance, adds to jackpot. Never frozen by the round-close window |
 | `tick()` | `oracle.deposit` | – | Anyone. Returns promise; panics `"round not due"` / `"tick in flight"` |
 | `on_weather(round, keeper)` | – | private callback | Not callable directly |
 | `new(config)` | – | `{ "config": {...} }` (`contract/scripts/init_args.py`) | `#[init] #[private]`, once |
-| NEP-141 / NEP-145 / NEP-148 | standard | standard | `ft_transfer` / `ft_transfer_call` reject `receiver == contract` (`"can't transfer to the Drizzle contract; use plant"`); `storage_deposit`, `storage_unregister` (requires all cities uprooted; `force` burns the balance), `ft_metadata`, … |
+| NEP-141 / NEP-145 / NEP-148 | standard | standard | `ft_transfer` / `ft_transfer_call` reject `receiver == contract` (`"can't transfer to the Drizzle contract; use plant"`); `storage_deposit`, `storage_unregister` (requires all cities uprooted; `force` burns the balance; the retained `seeded` entry's stake is not refunded), `ft_metadata`, … |
 
 ## Views
 ```ts
