@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+target/
+node_modules/
+.next/
+out/
+*.wasm
+!oracle/fixtures/*.wasm
+neardev/
+.near-credentials/
+*.key
+*.pem
+__pycache__/

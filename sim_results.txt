@@ -1,0 +1,52 @@
+1440 hours, 12 cities, hours with rain somewhere: 1175
+
+=== emission 50/h, evaporation 0.05%/dry h ===
+  all loyal (random city, never move)                  supply     98324 (+  58750 / - 60426)  per player: loyal 98
+  herd (everyone chases the wettest city)              supply    102510 (+  58750 / - 56240)  per player: herd 68, loyal 243
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply    107311 (+  58750 / - 51439)  per player: forecaster 103, herd 78, loyal 164, idle 100
+
+=== emission 50/h, evaporation 0.10%/dry h ===
+  all loyal (random city, never move)                  supply     63719 (+  58750 / - 95031)  per player: loyal 64
+  herd (everyone chases the wettest city)              supply     68351 (+  58750 / - 90399)  per player: herd 42, loyal 176
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply     75741 (+  58750 / - 83009)  per player: forecaster 69, herd 50, loyal 116, idle 100
+
+=== emission 50/h, evaporation 0.25%/dry h ===
+  all loyal (random city, never move)                  supply     23692 (+  58750 / -135058)  per player: loyal 24
+  herd (everyone chases the wettest city)              supply     25703 (+  58750 / -133047)  per player: herd 11, loyal 86
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply     35473 (+  58750 / -123277)  per player: forecaster 24, herd 15, loyal 57, idle 100
+
+=== emission 100/h, evaporation 0.05%/dry h ===
+  all loyal (random city, never move)                  supply    142571 (+ 117500 / - 74929)  per player: loyal 143
+  herd (everyone chases the wettest city)              supply    146845 (+ 117500 / - 70655)  per player: herd 75, loyal 434
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply    151761 (+ 117500 / - 65739)  per player: forecaster 141, herd 94, loyal 285, idle 100
+
+=== emission 100/h, evaporation 0.10%/dry h ===
+  all loyal (random city, never move)                  supply     98042 (+ 117500 / -119458)  per player: loyal 98
+  herd (everyone chases the wettest city)              supply    102789 (+ 117500 / -114711)  per player: herd 47, loyal 325
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply    110314 (+ 117500 / -107186)  per player: forecaster 98, herd 62, loyal 213, idle 100
+
+=== emission 100/h, evaporation 0.25%/dry h ===
+  all loyal (random city, never move)                  supply     42518 (+ 117500 / -174982)  per player: loyal 43
+  herd (everyone chases the wettest city)              supply     44616 (+ 117500 / -172884)  per player: herd 13, loyal 169
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply     54426 (+ 117500 / -163074)  per player: forecaster 35, herd 20, loyal 121, idle 100
+
+=== emission 200/h, evaporation 0.05%/dry h ===
+  all loyal (random city, never move)                  supply    231065 (+ 235000 / -103935)  per player: loyal 231
+  herd (everyone chases the wettest city)              supply    235504 (+ 235000 / - 99496)  per player: herd 89, loyal 823
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply    240520 (+ 235000 / - 94480)  per player: forecaster 206, herd 120, loyal 561, idle 100
+
+=== emission 200/h, evaporation 0.10%/dry h ===
+  all loyal (random city, never move)                  supply    166689 (+ 235000 / -168311)  per player: loyal 167
+  herd (everyone chases the wettest city)              supply    171647 (+ 235000 / -163353)  per player: herd 58, loyal 628
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply    179319 (+ 235000 / -155681)  per player: forecaster 146, herd 82, loyal 433, idle 100
+
+=== emission 200/h, evaporation 0.25%/dry h ===
+  all loyal (random city, never move)                  supply     80169 (+ 235000 / -254831)  per player: loyal 80
+  herd (everyone chases the wettest city)              supply     82423 (+ 235000 / -252577)  per player: herd 18, loyal 339
+  mixed (40 forecaster / 30 herd / 20 loyal / 10 idle) supply     92651 (+ 235000 / -242349)  per player: forecaster 62, herd 28, loyal 247, idle 100
+
+weekly supply, emission 100, evap 0.10%, mixed:
+[106717, 112204, 111929, 110991, 111416, 109380, 112024, 108834]
+
+Dubai rain-dance: 200/day burned into Dubai jackpot (it never rains there in this data):
+  supply 91303, burned 126197 -> the dance is a pure sink until it rains
