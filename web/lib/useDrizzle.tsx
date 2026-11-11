@@ -10,8 +10,15 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { RpcApi, apiSelection, isMissingContractError, type DrizzleApi } from './contract';
+import {
+  RpcApi,
+  apiSelection,
+  isMissingContractError,
+  type DrizzleApi,
+  type StorageBounds,
+} from './contract';
 import { getMock } from './mock';
+import { friendlyError } from './errors';
 import { fetchCurrentRain } from './openmeteo';
 import {
   MOCK_ACCOUNT_ID,
@@ -53,6 +60,7 @@ export interface DrizzleContextValue {
   cities: CityInfo[];
   user: UserView | null;
   stats: Stats | null;
+  storageBounds: StorageBounds | null;
   logs: RoundLog[];
   keys: AccessKeyInfo[] | null;
   rainNow: (number | null)[] | null;
@@ -116,6 +124,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
   const [cities, setCities] = useState<CityInfo[]>([]);
   const [user, setUser] = useState<UserView | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [storageBounds, setStorageBounds] = useState<StorageBounds | null>(null);
   const [logs, setLogs] = useState<RoundLog[]>([]);
   const [keys, setKeys] = useState<AccessKeyInfo[] | null>(null);
   const [rainNow, setRainNow] = useState<(number | null)[] | null>(null);
@@ -187,6 +196,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
     setCities([]);
     setUser(null);
     setStats(null);
+    setStorageBounds(null);
     setLogs([]);
     setKeys(null);
     setLoadError(null);
@@ -238,6 +248,14 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
         await pullAll();
         if (cancelled) return;
         setBooted(true);
+        api
+          .getStorageBounds()
+          .then((bounds) => {
+            if (!cancelled) setStorageBounds(bounds);
+          })
+          .catch(() => {
+            if (!cancelled) setStorageBounds(null);
+          });
         api
           .viewAccessKeyList(api.contractId)
           .then((list) => {
@@ -341,7 +359,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
         await settle.promise;
         await refreshRef.current();
       } catch (err) {
-        setError(`${label} failed: ${errorMessage(err)}`);
+        setError(friendlyError(errorMessage(err)));
       } finally {
         setBusy(null);
       }
@@ -394,6 +412,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
       cities,
       user,
       stats,
+      storageBounds,
       logs,
       keys,
       rainNow,
@@ -433,6 +452,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
       cities,
       user,
       stats,
+      storageBounds,
       logs,
       keys,
       rainNow,

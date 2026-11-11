@@ -185,6 +185,19 @@ body::before {
   font-size: 0.72rem;
 }
 
+.claim {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+}
+
+.seed-note {
+  font-size: 0.56rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .wallet-id em {
   font-style: normal;
   color: var(--accent-2);
@@ -745,6 +758,21 @@ input:focus-visible {
   margin: 6px 0 0;
 }
 
+.amount-hint {
+  margin: 5px 0 0;
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.amount-hint.is-warn {
+  color: var(--warn);
+}
+
+.closing-hint {
+  color: var(--warn);
+}
+
 .muted {
   color: var(--muted);
 }
@@ -1125,6 +1153,14 @@ code {
 
   .wallet .btn-primary {
     flex: 1 1 auto;
+  }
+
+  .claim {
+    width: 100%;
+  }
+
+  .claim .btn {
+    width: 100%;
   }
 
   .round-bar {

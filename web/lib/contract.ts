@@ -39,6 +39,11 @@ export interface DrizzleActions {
   tick(): Promise<void>;
 }
 
+export interface StorageBounds {
+  min: U128;
+  max: U128 | null;
+}
+
 export interface DrizzleApi extends DrizzleActions {
   readonly contractId: string;
   readonly mode: 'mock' | 'rpc';
@@ -50,6 +55,8 @@ export interface DrizzleApi extends DrizzleActions {
   getRoundLogs(from: number, limit: number): Promise<RoundLog[]>;
   getRoundLog(round: number): Promise<RoundLog | null>;
   getStats(): Promise<Stats>;
+  /** NEP-145 storage_balance_bounds — sizes the claim_seed deposit shown in the header. */
+  getStorageBounds(): Promise<StorageBounds>;
   viewAccessKeyList(accountId: string): Promise<AccessKeyInfo[]>;
   ftBalanceOf(accountId: string): Promise<U128>;
 }
@@ -99,6 +106,11 @@ export class RpcApi implements DrizzleApi {
     return view<Stats>(this.contractId, 'get_stats');
   }
 
+  async getStorageBounds(): Promise<StorageBounds> {
+    const bounds = await view<{ min: U128; max: U128 | null }>(this.contractId, STORAGE_BALANCE_BOUNDS);
+    return { min: bounds.min, max: bounds.max ?? null };
+  }
+
   viewAccessKeyList(accountId: string) {
     return viewAccessKeyList(accountId);
   }
@@ -115,7 +127,7 @@ export class RpcApi implements DrizzleApi {
     const accountId = this.account ?? this.signer.accountId();
     if (!accountId) throw new Error('connect a wallet first');
     const [bounds, stored] = await Promise.all([
-      view<{ min: U128; max: U128 | null }>(this.contractId, STORAGE_BALANCE_BOUNDS),
+      this.getStorageBounds(),
       view<{ total: U128; available: U128 } | null>(this.contractId, STORAGE_BALANCE_OF, {
         account_id: accountId,
       }),

@@ -3,12 +3,16 @@
 import { useEffect, useState } from 'react';
 import { useDrizzle } from '../lib/useDrizzle';
 import { cityName } from '../lib/cities';
-import { fmtAmount, fmtMm, isPositive, parseAmount } from '../lib/types';
+import { useNow } from '../lib/useNow';
+import { ONE_DRIZZLE, ROUND_CLOSING_MESSAGE, isRoundClosing, minPlantAmount } from '../lib/round';
+import { fmtAmount, fmtMm, isPositive, parseAmount, toBig } from '../lib/types';
 
 export function CityCard() {
-  const { cities, selected, user, accountId, plant, uproot, rainDance, busy, config } = useDrizzle();
+  const { cities, selected, user, accountId, plant, uproot, rainDance, busy, config, round, roundAt } =
+    useDrizzle();
   const [amount, setAmount] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const now = useNow(1000);
 
   useEffect(() => {
     setAmount('');
@@ -18,14 +22,32 @@ export function CityCard() {
   const city = selected === null ? null : cities[selected];
   const mine = city ? user?.cities[city.index] : null;
   const connected = accountId !== null;
-  const disabledReason = connected ? undefined : 'Connect a wallet first';
   const symbol = config?.symbol ?? 'DRIZZLE';
+  const serverNow = round ? round.now + (now - roundAt) / 1000 : 0;
+  const closing = isRoundClosing(config, round, serverNow);
+  const min = city && config ? minPlantAmount(city, config.emission_per_round) : ONE_DRIZZLE;
+  const typed = isPositive(amount) ? toBig(parseAmount(amount)) : 0n;
+  const belowMin = typed > 0n && typed < min;
 
-  const withAmount = (fn: (yocto: string) => void) => {
+  let disabledReason: string | undefined;
+  if (!connected) disabledReason = 'Connect a wallet first';
+  else if (closing) disabledReason = ROUND_CLOSING_MESSAGE;
+
+  const withAmount = (fn: (yocto: string) => void, kind: 'plant' | 'dance' = 'plant') => {
     try {
       if (!isPositive(amount)) throw new Error('enter an amount');
+      const yocto = parseAmount(amount);
+      if (kind === 'plant') {
+        const value = BigInt(yocto);
+        if (value < ONE_DRIZZLE) throw new Error('plant amount below the 1 DRIZZLE minimum');
+        if (value < min) {
+          throw new Error(
+            `city share price too high — plant at least ${fmtAmount(min.toString())} ${symbol}`,
+          );
+        }
+      }
       setFormError(null);
-      fn(parseAmount(amount));
+      fn(yocto);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err));
     }
@@ -120,20 +142,24 @@ export function CityCard() {
         />
         <span className="amount-suffix">{symbol}</span>
       </label>
+      <p className={`amount-hint ${belowMin ? 'is-warn' : ''}`}>
+        min {fmtAmount(min.toString())} {symbol}
+        {closing && <span className="closing-hint"> · {ROUND_CLOSING_MESSAGE}</span>}
+      </p>
       {formError && <p className="form-error">{formError}</p>}
 
       <div className="action-row">
         <button
           className="btn btn-primary"
-          disabled={!connected || busy !== null}
-          title={disabledReason}
-          onClick={() => withAmount((yocto) => plant(city.index, yocto))}
+          disabled={!connected || busy !== null || closing || belowMin}
+          title={disabledReason ?? (belowMin ? 'below the minimum plant amount' : undefined)}
+          onClick={() => withAmount((yocto) => plant(city.index, yocto), 'plant')}
         >
           {busy === 'Plant' ? 'Planting…' : 'Plant'}
         </button>
         <button
           className="btn"
-          disabled={!connected || busy !== null || (mine?.shares ?? '0') === '0'}
+          disabled={!connected || busy !== null || closing || (mine?.shares ?? '0') === '0'}
           title={disabledReason ?? 'Withdraw your whole position in this city'}
           onClick={() => uproot(city.index, null)}
         >
@@ -143,7 +169,7 @@ export function CityCard() {
           className="btn btn-rain"
           disabled={!connected || busy !== null}
           title={disabledReason ?? 'Burn $DRIZZLE into the cloud jackpot; it pays this city the next time it rains'}
-          onClick={() => withAmount((yocto) => rainDance(city.index, yocto))}
+          onClick={() => withAmount((yocto) => rainDance(city.index, yocto), 'dance')}
         >
           {busy === 'Rain dance' ? 'Dancing…' : 'Rain dance'}
         </button>

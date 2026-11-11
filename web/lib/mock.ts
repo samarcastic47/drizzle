@@ -20,7 +20,8 @@ import type {
   UserView,
 } from './types';
 import { parseAmount } from './types';
-import type { DrizzleApi } from './contract';
+import { ONE_DRIZZLE, minPlantAmount } from './round';
+import type { DrizzleApi, StorageBounds } from './contract';
 import replayWeek from '../data/replay-week.json';
 
 const ROUND_SECONDS = 60;
@@ -301,6 +302,11 @@ export class MockApi implements DrizzleApi {
     return log ? toRoundLog(log) : null;
   }
 
+  /** The deployed contract's NEP-145 floor: 0.03199 NEAR. */
+  async getStorageBounds(): Promise<StorageBounds> {
+    return { min: '31990000000000000000000', max: null };
+  }
+
   async getStats(): Promise<Stats> {
     this.advance();
     return {
@@ -336,8 +342,19 @@ export class MockApi implements DrizzleApi {
 
   async plant(city: number, amount: U128): Promise<void> {
     this.assertCity(city);
+    this.advance();
     const user = this.requireUser();
     const value = BigInt(amount);
+    if (!this.replay && Date.now() >= this.dueAt(this.nextRound) * 1000) {
+      throw new Error('round closing: wait for settlement');
+    }
+    if (value < ONE_DRIZZLE) throw new Error('plant amount below the 1 DRIZZLE minimum');
+    const pool = this.pools[city];
+    const min = minPlantAmount(
+      { shares: pool.shares.toString(), value: pool.value.toString(), jackpot: pool.jackpot.toString() },
+      drizzle(EMISSION).toString(),
+    );
+    if (value < min) throw new Error('city share price too high — plant a bigger amount');
     if (value <= 0n) throw new Error('amount must be positive');
     if (value > user.balance) throw new Error('insufficient balance');
     user.balance -= value;

@@ -1,10 +1,11 @@
 'use client';
 
 import { useDrizzle } from '../lib/useDrizzle';
-import { fmtAmount, shortAccount } from '../lib/types';
+import { fmt, fmtAmount, shortAccount } from '../lib/types';
 
 export function Header() {
-  const { accountId, user, mock, mode, connect, disconnect, connecting, claimSeed, busy, config } = useDrizzle();
+  const { accountId, user, mock, mode, connect, disconnect, connecting, claimSeed, busy, config, storageBounds } =
+    useDrizzle();
   const seeded = user?.seeded ?? false;
 
   return (
@@ -34,9 +35,16 @@ export function Header() {
               <small>{config?.symbol ?? 'DRIZZLE'}</small>
             </div>
             {!seeded && (
-              <button className="btn btn-primary" onClick={claimSeed} disabled={busy !== null}>
-                {busy === 'Claim seed' ? 'Claiming…' : 'Claim seed'}
-              </button>
+              <div className="claim">
+                <button className="btn btn-primary" onClick={claimSeed} disabled={busy !== null}>
+                  {busy === 'Claim seed' ? 'Claiming…' : 'Claim seed'}
+                </button>
+                {storageBounds && (
+                  <span className="seed-note">
+                    ≈{fmt(storageBounds.min, 24, 3)} NEAR storage deposit (refundable)
+                  </span>
+                )}
+              </div>
             )}
             <button
               className="btn btn-ghost wallet-id"
