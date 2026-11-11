@@ -334,9 +334,16 @@ async function submitTick(
     const outcome = await provider.sendTransactionUntil(signedTx, 'EXECUTED_OPTIMISTIC');
     return { txHash, outcome };
   } catch (error) {
-    if (error instanceof TransactionTimeoutError) return { txHash, outcome: null };
+    // The RPC reports the yield-receipt wait as a generic `Timeout error [408]`,
+    // not always as TransactionTimeoutError: both mean "submitted, unknown".
+    if (error instanceof TransactionTimeoutError || isRpcTimeout(error)) return { txHash, outcome: null };
     throw error;
   }
+}
+
+function isRpcTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout/i.test(message) || /\[408\]/.test(message);
 }
 
 /** Logs of the tick transaction, once the node knows them; null while unknown. */
