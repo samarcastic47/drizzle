@@ -1,0 +1,28 @@
+[package]
+name = "drizzle-oracle"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Drizzle oracle: one batched Open-Meteo precipitation request for up to 50 cities"
+
+[lib]
+name = "drizzle_oracle"
+path = "src/lib.rs"
+
+[[bin]]
+name = "drizzle-oracle"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# WASI HTTP only exists for the wasip2 target; keeping it target-gated lets
+# `cargo test` build the pure logic (and the binary's non-wasi stub) on x86_64.
+[target.'cfg(target_os = "wasi")'.dependencies]
+wasi-http-client = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
