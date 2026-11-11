@@ -376,6 +376,9 @@ async function waitForTickOutcome(
   let error: string | undefined;
   let lastError: string | undefined;
   let logDeadline = Number.POSITIVE_INFINITY;
+  // Until the tick itself has executed, in_flight is still empty: only call the
+  // round failed once we have seen our own lock (or the deadline passes).
+  let sawInFlight = false;
 
   while (Date.now() < deadline) {
     if (!(await pause(SETTLE_POLL_MS))) {
@@ -392,7 +395,9 @@ async function waitForTickOutcome(
         if (state.next_round > round) {
           result = 'settled';
           logDeadline = Date.now() + 5 * SETTLE_POLL_MS;
-        } else if (!state.in_flight || state.in_flight.round !== round) {
+        } else if (state.in_flight?.round === round) {
+          sawInFlight = true;
+        } else if (sawInFlight) {
           result = 'failed';
           error = `in_flight cleared but round ${round} did not settle (the oracle call failed)`;
           logDeadline = Date.now() + 5 * SETTLE_POLL_MS;
