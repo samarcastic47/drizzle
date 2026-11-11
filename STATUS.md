@@ -9,6 +9,7 @@ _Updated: 2026-11-11 (session start)_
 | WP-6 Deploy replay | orchestrator | FINAL contract (sha256 fe779482…1001) deployed fresh to `drizzle-replay.testnet` (account reset via faucet) and `drizzle-live.testnet` (live, first_hour 498446). Keepers run as persistent services `drizzle-keeper` / `drizzle-keeper-live` on fastnear RPC; web served at http://localhost:4321 (`drizzle-web`). Human manual test pending (TESTING.md) |
 | WP-9 Review | done | Re-review: all F/S items closed; final batch R1 (dead shares 1e12, guard → ≥1 share), R2 (live exit after close+24 h), R3 (config bounds), R4 (re-registration discount). 46 unit tests |
 | Next | – | After the human's test: delete keys (human OK), hosting (human), video/X/submission |
+| Ops notes | – | `rpc.testnet.near.org` is deprecated and returns 429, so keeper and web default to `https://test.rpc.fastnear.com`. Replay settles ~1 round / 70–90 s (OutLayer latency), so it runs a little behind the 60 s schedule and catches up back-to-back. The keeper key is staged at /tmp/.dk (chmod 600, outside the repo) for the services; delete it when the keepers stop |
 
 ## Done
 - WP-1 Doc scout: `docs/notes/outlayer.md`. It confirms the live 7-arg `request_execution` ABI from the chain schema, the raw-stdout callback (no wrapper), the `NEAR_REQUEST_ID` env var for the guest, `WasmUrl` hash checks inside the enclave, the ≈0.0045 NEAR estimate for a 30 s job, and the attestation URL `https://app.outlayer.ai/attestation/{id}` (id mapping unverified).
