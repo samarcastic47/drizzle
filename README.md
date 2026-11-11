@@ -8,7 +8,7 @@ A NEP-141 token whose supply mints only when it rains in real cities. The weathe
 
 ## Try it in 2 minutes (testnet, no funds)
 
-The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s of historical weather). The live instance is `{{LIVE_CONTRACT}}` (1 round = 1 real hour). Testnet NEAR is free from the faucet and the seed is never bought; a first claim may attach a small storage-deposit bond (refunded above the minimum when you unregister).
+The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s, looping a real week of historical weather). The live instance is `{{LIVE_CONTRACT}}` (1 round = 1 real hour). Testnet NEAR is free from the faucet and the seed is never bought; a first claim attaches a 0.03199 NEAR storage bond, refunded by `storage_unregister` except the small retained seed entry.
 
 1. Open {{DEMO_URL}} → you see 12 city pins and a "next round in mm:ss" bar.
 2. Connect a testnet wallet → your account id and balance appear in the header.
@@ -30,15 +30,15 @@ The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s of histo
 
 | Verb | What happens | Why it exists |
 |---|---|---|
-| **Claim seed** | Each NEAR account claims 100 $DRIZZLE once | Bootstraps the game |
-| **Plant** | Stake $DRIZZLE in a city; it sprouts at the next round | Anti-snipe: you cannot plant after seeing rain |
+| **Claim seed** | Each NEAR account claims 100 $DRIZZLE once, ever | Bootstraps the game |
+| **Plant** | Stake at least 1 $DRIZZLE in a city; it sprouts at the next round. A plant that would mint under 10⁶ shares at the worst-case post-rain price is rejected | Anti-snipe plus anti share-inflation: you cannot plant after seeing rain, or buy in at an absurd share price |
 | **Rain** | Each round's emission E = 100 is split across cities that rained (≥ 0.2 mm), weighted by `min(mm, 5.0)`; each city's slice is split pro rata by shares | Crowded wet cities pay little, empty ones pay a lot |
 | **Evaporate** | In a dry round a city's planted value loses 10 bps, burned | Supply sink: holding a dry bet costs you |
 | **Rain dance** | Burn $DRIZZLE into a city's cloud jackpot; it pays that city's planters the next time it rains | The on-chain ritual; Dubai and Cairo got no rain in 60 days |
-| **Uproot** | Withdraw your stake at its current value | No lockup; moving costs the next round's sprout delay |
+| **Uproot** | Withdraw your stake at its current value. A partial uproot must leave at least 1 $DRIZZLE, or everything | No lockup; moving costs the next round's sprout delay |
 | **Tick** | Anyone can settle the due round; the caller requests the reading and earns the 1 $DRIZZLE tip | No privileged keeper |
 
-**Anti-snipe rule:** planted tokens enter `pending` and only become shares after the next round settles, at the post-settlement price. **Crowding:** the round's 100 DRIZZLE is split across rainy cities by `min(mm, 5.0)`; each city's slice is split pro rata by shares. A lone planter in a wet city takes the whole slice; a hundred planters split it.
+**Anti-snipe rule:** planted tokens enter `pending` and only become shares after the next round settles, at the post-settlement price. **Live close window:** in live mode, `plant` and `uproot` freeze once the round's hour has closed until it settles, so nobody can dodge (or enter ahead of) the evaporation after the weather is public; replay is exempt because its hours are historical. **Crowding:** the round's 100 DRIZZLE is split across rainy cities by `min(mm, 5.0)`; each city's slice is split pro rata by shares. A lone planter in a wet city takes the whole slice; a hundred planters split it.
 
 ## Parameters (immutable, from `get_config`)
 
@@ -48,10 +48,11 @@ The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s of histo
 | `evap_bps` | 10 bps (0.10%) of a city's pool value per dry round, burned |
 | `rain_threshold_tenths` | 2 tenths = 0.2 mm |
 | `cap_tenths` | 50 tenths = 5.0 mm (heavier rain adds no weight) |
-| `seed_amount` | 100 DRIZZLE, once per account |
+| `seed_amount` | 100 DRIZZLE, once per account, ever (unregistering does not reset it) |
 | `keeper_tip` | 1 DRIZZLE per settled round |
 | `round_seconds` | 60 s replay · 3600 s live |
 | `first_hour` (replay) | 497280 = 2026-09-24T00:00Z |
+| `replay_hours` | 168 (replay loops 2026-09-24T00:00Z … 09-30T23:00Z; round `r` reads `first_hour + r % replay_hours`; 0 = live) |
 | `decimals` | 18 |
 | `cities` | 12, fixed in `new()` |
 | Oracle code | `WasmUrl` pinned by sha256 `7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b`, target `wasm32-wasip2` |
@@ -83,11 +84,11 @@ python3 tools/supply_chart.py  # rewrites docs/supply.svg
 
 ## How NEAR is used
 
-- **NEP-141 + NEP-145** via `near-contract-standards` 5.24: `ft_transfer`, `ft_transfer_call`, `ft_resolve_transfer`, storage management with a storage-deposit bond.
+- **NEP-141 + NEP-145 + NEP-148** via `near-contract-standards` 5.24: `ft_transfer`, `ft_transfer_call`, `ft_resolve_transfer`, storage management with a storage-deposit bond, and FT metadata.
 - **OutLayer `request_execution` + yield/resume.** `tick()` builds the input (round hour + 12 coordinates) and calls `outlayer.testnet` with a `WasmUrl` source pinned by sha256. The enclave re-hashes the bytes before running them. OutLayer resolves the call asynchronously; the contract chains `.then(on_weather)`.
 - **One callback, and only one.** `on_weather` is `#[private]`, so only a callback from the contract's own call can reach it. It rejects a wrong hour or a wrong number of readings.
 - **Attested request id.** The oracle echoes `NEAR_REQUEST_ID` into its stdout, so the id is part of the attested output and is stored in `RoundLog.outlayer_request_id`.
-- **NEP-297 events.** `ft_mint` / `ft_burn` / `ft_transfer`, plus `drizzle_round`, `drizzle_plant`, `drizzle_uproot`, `drizzle_rain_dance`, `drizzle_seed`, `drizzle_round_failed`.
+- **NEP-297 events.** `ft_mint` / `ft_burn` / `ft_transfer` from the NEP-141 standard, plus the custom `drizzle` standard with `round`, `round_failed`, `plant`, `uproot`, `rain_dance` and `seed`.
 - **Keyless account.** `new()` is `#[private]`, there is no setter, and the full-access keys are deleted after deploy. Re-check with `list-keys` in the demo steps.
 
 ## Trust model and known limits
@@ -102,9 +103,12 @@ What you still trust:
 
 Known limits:
 
-- **Sybil:** the seed is one per account. Creating accounts is cheap on testnet, so seeds are not a Sybil-proof distribution; this is a game demo, not a sale.
-- **Replay lookahead:** replay hours are historical, so a player can look them up in advance. Replay demonstrates the mechanic and the oracle path; the live instance is the real forecasting game.
+- **Sybil:** the seed is one per account, and `storage_unregister` does not reset the seeded flag, so one seed per account is enforced on-chain. Creating accounts is cheap on testnet, so seeds are still not a Sybil-proof distribution; this is a game demo, not a sale.
+- **Replay lookahead:** replay loops the real week 2026-09-24 → 09-30, so a player can look those hours up in advance. Replay demonstrates the mechanic and the oracle path; the live instance is the real forecasting game.
 - **Rounds need someone to call `tick()`.** Anyone can, and the caller pays the OutLayer deposit and earns the 1 DRIZZLE tip (minted only to an account registered for the token; claim the seed first). No privileged keeper is required, but no round settles without a caller.
+- **Round-log retention:** only the newest 240 round logs are stored on-chain (each costs ~0.009 NEAR of storage). Verify older rounds from the NEP-297 `round` event in the tick transaction history.
+- **Dead-pool reset:** if a city's share price falls below 1e-6 after a long dry spell, the pool resets — old shares are retired and the remaining dust is burned.
+- **Sole-planter jackpot:** entering an empty city and being its only planter can collect that city's whole jackpot on the next rain. That is the intended "empty wet cities pay a lot" behavior.
 - **Attestation lookup from a static page.** The OutLayer jobs API sends CORS headers only for `app.outlayer.ai`, so the browser drawer cannot fetch it. The request id is on-chain; from a terminal, map it to the attestation job id:
 
   ```bash
