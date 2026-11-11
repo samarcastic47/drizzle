@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useDrizzle } from '../lib/useDrizzle';
-import { fmt, fmtAmount, fmtHour } from '../lib/types';
+import { fmt, fmtAmount, fmtHour, fmtHourWeek } from '../lib/types';
 
 function shortKey(key: string): string {
   return key.length > 34 ? `${key.slice(0, 18)}…${key.slice(-10)}` : key;
@@ -24,6 +24,11 @@ export function About() {
     ['round', `${config.round_seconds}s${config.replay ? ' (replay: one real hour per round)' : ''}`],
     ['genesis', fmtHour(config.genesis_ts)],
     ['round 0 hour', fmtHour(config.first_hour * 3600)],
+    ...(config.replay_hours > 0
+      ? ([
+          ['replay window', `${config.replay_hours} h · week of ${fmtHourWeek(config.first_hour, config.replay_hours)} (loops)`],
+        ] as [string, string][])
+      : []),
     ['oracle account', config.oracle.outlayer],
     ['oracle deposit', `${fmt(config.oracle.deposit, 24, 4)} NEAR`],
     ['contract', `${contractId}${mock ? ' (mock)' : ''}`],

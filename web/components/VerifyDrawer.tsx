@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useDrizzle } from '../lib/useDrizzle';
 import { fetchHourlyReadings, type HourlyReading } from '../lib/openmeteo';
 import { fmtHour, fmtHourIso, fmtMm } from '../lib/types';
+import { cityName } from '../lib/cities';
 import {
   OUTLAYER_JOBS_URL,
   attestationUrl,
@@ -146,7 +147,7 @@ export function VerifyDrawer() {
               const match = reading ? reading.tenths === onChain : null;
               return (
                 <tr key={city.name}>
-                  <td>{city.name}</td>
+                  <td>{cityName(index, city.name)}</td>
                   <td className="mono">{fmtMm(onChain)} mm</td>
                   <td className="mono">
                     {reading ? `${reading.mm === null ? 'null → ' : ''}${fmtMm(reading.tenths)} mm` : '…'}

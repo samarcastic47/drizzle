@@ -35,6 +35,8 @@ export interface Config {
   genesis_ts: number;
   first_hour: number;
   replay: boolean;
+  /** Replay loops real hours over [first_hour, first_hour + replay_hours); 0 = live. */
+  replay_hours: number;
   oracle: OracleConfig;
 }
 
@@ -45,7 +47,10 @@ export interface InFlight {
 
 export interface RoundState {
   next_round: number;
+  /** unix hour of next_round — already looped in replay, never recompute it */
   next_hour: number;
+  /** oldest round whose log is still stored (next_round - 240, or 0) */
+  oldest_round_log: number;
   due_at: number;
   in_flight: InFlight | null;
   now: number;
@@ -239,6 +244,18 @@ export function fmtHour(unixSecs: number): string {
     timeZone: 'UTC',
     hour12: false,
   })} UTC`;
+}
+
+/** A replay window of consecutive hours -> "24–30 Sep 2026". */
+export function fmtHourWeek(firstHour: number, hours: number): string {
+  const start = new Date(firstHour * 3600 * 1000);
+  const end = new Date((firstHour + Math.max(0, hours - 1)) * 3600 * 1000);
+  const month = (date: Date) => date.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  const sameMonth = month(start) === month(end) && start.getUTCFullYear() === end.getUTCFullYear();
+  if (!sameMonth) {
+    return `${start.getUTCDate()} ${month(start)} – ${end.getUTCDate()} ${month(end)} ${end.getUTCFullYear()}`;
+  }
+  return `${start.getUTCDate()}–${end.getUTCDate()} ${month(end)} ${end.getUTCFullYear()}`;
 }
 
 /** unix seconds -> "2026-11-11T14:00" (Open-Meteo hour form) */

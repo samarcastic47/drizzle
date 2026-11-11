@@ -134,6 +134,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
   const [verify, setVerify] = useState<RoundLog | null>(null);
 
   const nextRoundRef = useRef(0);
+  const oldestLogRef = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
 
   /* ---------- wallet ---------- */
@@ -197,6 +198,7 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
       const [roundState, cityList] = await Promise.all([api.getRoundState(), api.getCities()]);
       if (cancelled) return;
       nextRoundRef.current = roundState.next_round;
+      oldestLogRef.current = roundState.oldest_round_log ?? 0;
       setRound(roundState);
       setRoundAt(Date.now());
       setCities(cityList);
@@ -204,7 +206,8 @@ export function DrizzleProvider({ children }: { children: ReactNode }) {
     };
 
     const pullHistory = async () => {
-      const from = Math.max(0, nextRoundRef.current - 30);
+      // The contract keeps only the newest 240 logs (oldest_round_log).
+      const from = Math.max(oldestLogRef.current, nextRoundRef.current - 30);
       const [roundLogs, contractStats] = await Promise.all([api.getRoundLogs(from, 30), api.getStats()]);
       if (cancelled) return;
       setLogs(roundLogs);

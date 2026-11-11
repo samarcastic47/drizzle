@@ -7,6 +7,7 @@ import world from 'world-atlas/countries-110m.json';
 import type { FeatureCollection, Geometry, GeoJsonProperties, Polygon } from 'geojson';
 import type { GeometryCollection, Topology } from 'topojson-specification';
 import { useDrizzle } from '../lib/useDrizzle';
+import { cityName } from '../lib/cities';
 import { approx, fmtMm, fmtAmount, toBig } from '../lib/types';
 
 const WIDTH = 960;
@@ -89,7 +90,8 @@ export function WorldMap() {
           const rainedLastRound = city.last_rain_round !== null && round !== null && city.last_rain_round === round.next_round - 1;
           const wet = (rainNow?.[city.index] ?? 0) > 0;
           const isSelected = selected === city.index;
-          const label = `${city.name}: ${fmtAmount(city.value)} DRIZZLE staked, ${city.planters} planters, ${
+          const name = cityName(city.index, city.name);
+          const label = `${name}: ${fmtAmount(city.value)} DRIZZLE staked, ${city.planters} planters, ${
             city.last_rain_round === null ? 'never rained' : `last rain round ${city.last_rain_round} (${fmtMm(city.last_mm_tenths)} mm)`
           }`;
           return (
@@ -114,7 +116,7 @@ export function WorldMap() {
               <circle className="pin-dot" r={radius} filter="url(#pinGlow)" />
               <circle className="pin-core" r={Math.max(1.4, radius * 0.3)} />
               <text className="pin-label" y={-radius - 7}>
-                {city.name}
+                {name}
               </text>
               {wet && (
                 <text className="pin-drop" y={radius + 13} aria-hidden>
@@ -156,7 +158,7 @@ export function CityChips() {
               aria-pressed={selected === city.index}
             >
               <span className="chip-name">
-                {city.name}
+                {cityName(city.index, city.name)}
                 {wet && <span className="chip-wet" aria-label="raining now">💧</span>}
               </span>
               <span className="chip-stat">{fmtAmount(city.value)} staked</span>

@@ -21,10 +21,12 @@ import type {
 } from './types';
 import { parseAmount } from './types';
 import type { DrizzleApi } from './contract';
-import rainData from '../data/rain-60d.json';
+import replayWeek from '../data/replay-week.json';
 
 const ROUND_SECONDS = 60;
 const HISTORY_ROUNDS = 45;
+/** The contract keeps only the newest 240 round logs. */
+const LOG_CAPACITY = 240;
 const MOCK_KEEPER = 'drizzle-dev.testnet';
 const AUTO_KEEPER_GRACE_MS = 6_000;
 const IN_FLIGHT_MS = 2_600;
@@ -37,7 +39,7 @@ const KEEPER_TIP = 1;
 
 const CITIES: CityConfig[] = [
   { name: 'Bergen', lat_e4: 603900, lon_e4: 53200 },
-  { name: 'São Paulo', lat_e4: -235500, lon_e4: -466300 },
+  { name: 'Sao Paulo', lat_e4: -235500, lon_e4: -466300 },
   { name: 'Lagos', lat_e4: 65200, lon_e4: 33800 },
   { name: 'Singapore', lat_e4: 13500, lon_e4: 1038200 },
   { name: 'Tokyo', lat_e4: 356800, lon_e4: 1396900 },
@@ -70,12 +72,12 @@ const BASELINE: { value: number; planters: number; jackpot?: number }[] = [
 ];
 
 /**
- * Real Open-Meteo hourly precipitation (tenths of mm) for the replay window that
- * starts at `first_hour`: 2026-09-24T00 → 2026-11-10T23, 1152 hours, same city order.
- * The mock settles these actual hours, so the Verify drawer re-fetches the same
- * Open-Meteo query and matches the on-chain reading.
+ * Real Open-Meteo hourly precipitation (tenths of mm) for the replay week
+ * 2026-09-24T00 → 2026-09-30T23 (168 hours), same city order. The contract loops these
+ * hours every 168 rounds; the mock does the same so Verify re-fetches the same hour.
  */
-const REPLAY_WEATHER = rainData as { first_hour: number; hours: number; tenths: number[][] };
+const REPLAY_WEATHER = replayWeek as { first_hour: number; hours: number; tenths: number[][] };
+const REPLAY_HOURS = REPLAY_WEATHER.hours;
 
 const YOCTO = 10n ** 18n;
 const drizzle = (n: number | string): bigint => BigInt(parseAmount(String(n)));
@@ -217,6 +219,7 @@ export class MockApi implements DrizzleApi {
       genesis_ts: this.genesis,
       first_hour: this.firstHour,
       replay: this.replay,
+      replay_hours: this.replay ? REPLAY_HOURS : 0,
       oracle: {
         outlayer: 'outlayer.testnet',
         source: {
@@ -236,7 +239,8 @@ export class MockApi implements DrizzleApi {
     this.advance();
     return {
       next_round: this.nextRound,
-      next_hour: this.firstHour + this.nextRound,
+      next_hour: this.roundHour(this.nextRound),
+      oldest_round_log: Math.max(0, this.nextRound - LOG_CAPACITY),
       due_at: this.dueAt(this.nextRound),
       in_flight: this.inFlight ? { ...this.inFlight } : null,
       now: Math.floor(Date.now() / 1000),
@@ -410,9 +414,14 @@ export class MockApi implements DrizzleApi {
     return this.genesis + (round + 1) * ROUND_SECONDS;
   }
 
+  /** Replay loops the recorded week; live maps round r to hour first_hour + r. */
+  private roundHour(round: number): number {
+    return this.firstHour + (this.replay ? round % REPLAY_HOURS : round);
+  }
+
   /** Real recorded hours for the replay window, synthetic weather past its end. */
   private weatherFor(round: number): number[] {
-    const recorded = this.replay ? REPLAY_WEATHER.tenths[round] : undefined;
+    const recorded = this.replay ? REPLAY_WEATHER.tenths[round % REPLAY_HOURS] : undefined;
     if (recorded) return CITIES.map((_, c) => recorded[c] ?? 0);
     const synthetic: number[] = [];
     for (let c = 0; c < CITIES.length; c += 1) {
@@ -426,7 +435,7 @@ export class MockApi implements DrizzleApi {
   }
 
   private settleRound(round: number): void {
-    const hour = this.firstHour + round;
+    const hour = this.roundHour(round);
     const mmTenths = this.weatherFor(round);
 
     const weights = mmTenths.map((mm) => (mm >= THRESHOLD_TENTHS ? Math.min(mm, CAP_TENTHS) : 0));
@@ -476,6 +485,7 @@ export class MockApi implements DrizzleApi {
       settledTs: this.dueAt(round) + 1 + Math.floor(noise(round, 55) * 4),
     });
     this.minted += drizzle(KEEPER_TIP);
+    this.logs.delete(round - LOG_CAPACITY);
     this.nextRound = round + 1;
   }
 

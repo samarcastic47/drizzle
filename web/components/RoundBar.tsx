@@ -2,7 +2,7 @@
 
 import { useDrizzle } from '../lib/useDrizzle';
 import { useNow } from '../lib/useNow';
-import { fmtCountdown, fmtHour, fmt } from '../lib/types';
+import { fmtCountdown, fmtHour, fmtHourWeek, fmt } from '../lib/types';
 
 export function RoundBar() {
   const { round, roundAt, config, mode, setMode, tick, busy, loadError } = useDrizzle();
@@ -61,6 +61,9 @@ export function RoundBar() {
         {round && config?.replay && (
           <p className="round-sub">
             simulating {fmtHour(round.next_hour * 3600)} · {config.round_seconds}s rounds
+            {config.replay_hours > 0 && (
+              <> · replaying the week of {fmtHourWeek(config.first_hour, config.replay_hours)} (loop)</>
+            )}
           </p>
         )}
         {round && config && !config.replay && (

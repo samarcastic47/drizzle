@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useDrizzle } from '../lib/useDrizzle';
+import { cityName } from '../lib/cities';
 import { fmtAmount, fmtMm, isPositive, parseAmount } from '../lib/types';
 
 export function CityCard() {
@@ -49,7 +50,7 @@ export function CityCard() {
       <header className="city-head">
         <div>
           <p className="eyebrow">selected city</p>
-          <h2>{city.name}</h2>
+          <h2>{cityName(city.index, city.name)}</h2>
         </div>
         <span className={`rain-badge ${city.last_rain_round !== null ? 'is-wet' : ''}`}>
           {city.last_rain_round === null ? 'never rained' : `last rain round ${city.last_rain_round}`}

@@ -2,6 +2,7 @@
 
 import { useDrizzle } from '../lib/useDrizzle';
 import { fmtAmount, fmtHour, fmtMm, shortAccount, toBig } from '../lib/types';
+import { cityName } from '../lib/cities';
 import type { RoundLog } from '../lib/types';
 
 interface Line {
@@ -47,7 +48,7 @@ function describeRound(log: RoundLog, names: string[], threshold: number, symbol
 
 export function Feed() {
   const { logs, cities, openVerify, config } = useDrizzle();
-  const names = cities.map((city) => city.name);
+  const names = cities.map((city) => cityName(city.index, city.name));
   const threshold = config?.rain_threshold_tenths ?? 2;
   const evapPct = ((config?.evap_bps ?? 10) / 100).toFixed(2);
   const symbol = config?.symbol ?? 'DRIZZLE';
