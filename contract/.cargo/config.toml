@@ -1,0 +1,5 @@
+# The sandbox binary is already present on this machine (near-sandbox 2.6.2);
+# point near-workspaces at it so `cargo test` never downloads it (the network is
+# very slow here). The file itself is gitignored (`contract/target/`).
+[env]
+NEAR_SANDBOX_BIN_PATH = { value = "../target/near-sandbox", relative = true }

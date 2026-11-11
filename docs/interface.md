@@ -5,13 +5,14 @@ All `U128` values are JSON decimal strings. All timestamps are unix **seconds** 
 ## Change methods
 | Method | Deposit | Args | Notes |
 |---|---|---|---|
-| `claim_seed()` | ≥ storage cost if unregistered (≥ 0.00125 NEAR); excess refunded | – | Registers storage if needed; mints `seed_amount` once per account; panics `"already seeded"` |
+| `claim_seed()` | `storage_balance_bounds().min` (0.01938 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
 | `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Moves balance → user pending; sprouts after round `next_round` settles |
 | `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). Returns U128 credited |
 | `rain_dance(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Burns from balance, adds to jackpot |
 | `tick()` | `oracle.deposit` | – | Anyone. Returns promise; panics `"round not due"` / `"tick in flight"` |
 | `on_weather(round, keeper)` | – | private callback | Not callable directly |
-| NEP-141 / NEP-145 | standard | standard | `ft_transfer`, `ft_transfer_call`, `storage_deposit`, … |
+| `new(config)` | – | `{ "config": {...} }` (`contract/scripts/init_args.py`) | `#[init] #[private]`, once |
+| NEP-141 / NEP-145 / NEP-148 | standard | standard | `ft_transfer`, `ft_transfer_call`, `storage_deposit`, `storage_unregister` (requires all cities uprooted; `force` burns the balance), `ft_metadata`, … |
 
 ## Views
 ```ts
@@ -65,10 +66,12 @@ RoundLog = {
 
 ## Events (NEP-297, `EVENT_JSON:` logs)
 - NEP-141 standard `nep141` v`1.0.0`: `ft_mint`, `ft_burn`, `ft_transfer`.
-- Custom standard `drizzle` v`1.0.0`:
-  - `drizzle_round` data `[{ round, hour, mm_tenths, minted, burned, keeper }]`
-  - `drizzle_round_failed` data `[{ round, reason }]`
-  - `drizzle_plant` `[{ account_id, city, amount, sprouts_after_round }]`
-  - `drizzle_uproot` `[{ account_id, city, shares, amount }]`
-  - `drizzle_rain_dance` `[{ account_id, city, amount, jackpot }]`
-  - `drizzle_seed` `[{ account_id, amount }]`
+- Custom standard `drizzle` v`1.0.0`, event names are snake_case variants:
+  - `round` data `[{ round, hour, mm_tenths, minted, burned, keeper }]`
+  - `round_failed` data `[{ round, reason }]` (failed callback: tx succeeds, round not advanced, `in_flight` cleared)
+  - `plant` `[{ account_id, city, amount, sprouts_after_round }]`
+  - `uproot` `[{ account_id, city, shares, amount }]`
+  - `rain_dance` `[{ account_id, city, amount, jackpot }]`
+  - `seed` `[{ account_id, amount }]`
+
+Stats semantics: `minted` = seeds + rain payouts + keeper tips; `burned` = evaporation + rain dances + forced-unregister burns; `danced` = rain dances only. `RoundLog.sprouted` = pending tokens converted that round; `RoundLog.keeper_tip` = tip actually paid (0 if the keeper is not registered).
