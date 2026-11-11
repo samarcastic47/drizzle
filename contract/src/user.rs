@@ -18,6 +18,8 @@ pub struct CityState {
     pub last_mm_tenths: u16,
     /// Accounts with `shares > 0 || pending > 0` in this city.
     pub planters: u32,
+    /// Bumped when a worthless pool is reset; shares from an older epoch are dead.
+    pub epoch: u32,
 }
 
 impl CityState {
@@ -56,10 +58,27 @@ pub struct UserCity {
     pub pending: u128,
     /// Round whose settlement will sprout `pending` (only meaningful when pending > 0).
     pub pending_round: u64,
+    /// City epoch the stored shares belong to (stale shares are worthless).
+    pub epoch: u32,
 }
 
 impl UserCity {
     pub fn is_empty(&self) -> bool {
         self.shares == 0 && self.pending == 0
     }
+}
+
+/// One `(round, city)` sprout bucket.
+///
+/// `holders` refcounts the positions whose pending belongs to this round, so the
+/// entry can be deleted as soon as the last of them has sprouted (and so the map
+/// stays bounded by live planting activity, not by the number of rounds).
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, Default)]
+pub struct Bucket {
+    pub holders: u32,
+    /// `(pending_in, shares_out)` of the round, set by `on_weather`.
+    pub ratio: Option<(u128, u128)>,
+    /// City epoch the shares minted from this bucket belong to.
+    pub epoch: u32,
 }

@@ -5,14 +5,14 @@ All `U128` values are JSON decimal strings. All timestamps are unix **seconds** 
 ## Change methods
 | Method | Deposit | Args | Notes |
 |---|---|---|---|
-| `claim_seed()` | `storage_balance_bounds().min` (0.01938 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
-| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Moves balance → user pending; sprouts after round `next_round` settles |
-| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). Returns U128 credited |
+| `claim_seed()` | `storage_balance_bounds().min` (0.02706 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
+| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | `amount >= 1e18` (1 DRIZZLE); rejected when the worst-case post-settlement price would mint < 1e6 shares (`"city share price too high…"`). Moves balance → user pending; sprouts after round `next_round` settles |
+| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). A partial uproot must leave 0 shares or >= 1 DRIZZLE of value, else `"remaining stake below minimum; uproot all"`. Returns U128 credited |
 | `rain_dance(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Burns from balance, adds to jackpot |
 | `tick()` | `oracle.deposit` | – | Anyone. Returns promise; panics `"round not due"` / `"tick in flight"` |
 | `on_weather(round, keeper)` | – | private callback | Not callable directly |
 | `new(config)` | – | `{ "config": {...} }` (`contract/scripts/init_args.py`) | `#[init] #[private]`, once |
-| NEP-141 / NEP-145 / NEP-148 | standard | standard | `ft_transfer`, `ft_transfer_call`, `storage_deposit`, `storage_unregister` (requires all cities uprooted; `force` burns the balance), `ft_metadata`, … |
+| NEP-141 / NEP-145 / NEP-148 | standard | standard | `ft_transfer` / `ft_transfer_call` reject `receiver == contract` (`"can't transfer to the Drizzle contract; use plant"`); `storage_deposit`, `storage_unregister` (requires all cities uprooted; `force` burns the balance), `ft_metadata`, … |
 
 ## Views
 ```ts
@@ -43,7 +43,7 @@ get_user({ account_id }): {
   balance: U128, seeded: boolean,
   cities: {
     index: number,
-    shares: U128,            // incl. pending already sprouted (settled lazily)
+    shares: U128,            // incl. pending already sprouted (settled lazily); 0 for shares retired by a pool reset
     value: U128,             // shares × value / total_shares
     pending: U128,           // not yet sprouted (planted for round >= next_round)
     pending_round: number | null

@@ -43,6 +43,9 @@ pub struct CityOutcome {
     pub burned: u128,
     /// `(pending_in, shares_out)` for this round, if anything was pending.
     pub sprout: Option<(u128, u128)>,
+    /// The pool was worthless (price below 1e-6, or empty): old shares were
+    /// discarded and the remaining dust was burned.
+    pub reset: bool,
 }
 
 /// `floor(a * b / c)` via a 256-bit intermediate.
@@ -114,17 +117,31 @@ pub fn settle_round(
         // Sprout pending at the post-settlement price.
         if pool.pending_total > 0 {
             let pending_in = pool.pending_total;
-            let shares_out = if pool.shares == 0 || pool.value == 0 {
-                // Empty (or worthless) pool: old shares are worthless, so start 1:1.
+            let reset = pool.shares == 0
+                || pool.value == 0
+                || pool.value.saturating_mul(1_000_000) < pool.shares;
+            let shares_out = if reset {
+                // Empty or worthless pool (price below 1e-6): old shares are dead,
+                // so burn the remaining dust and start 1:1. The contract raises the
+                // city epoch so holders of the old shares can no longer uproot.
+                outcome.burned += pool.value;
+                pool.value = 0;
                 pool.shares = 0;
                 pending_in
             } else {
+                // Not resetting means `pool.value * 1e6 >= pool.shares`, i.e.
+                // `pool.shares / pool.value <= 1e6`. Therefore
+                // `shares_out = floor(pending_in * shares / value) <= pending_in * 1e6`.
+                // `pending_in` is at most the token supply, so the product stays far
+                // below `u128::MAX` (the supply cannot reach 3.4e32 base units); this
+                // call cannot panic the settlement callback.
                 mul_div(pending_in, pool.shares, pool.value)
             };
             pool.value += pending_in;
             pool.shares += shares_out;
             pool.pending_total = 0;
             outcome.sprout = Some((pending_in, shares_out));
+            outcome.reset = reset;
         }
 
         outcomes.push(outcome);
@@ -487,4 +504,29 @@ mod tests {
         let mut pools = [Pool::default(), Pool::default()];
         settle_round(&mut pools, &[0], 0, &params());
     }
+    /// A pool whose price falls below 1e-6 is reset: dust is burned, old shares
+    /// are discarded and the new pending sprouts 1:1.
+    #[test]
+    fn worthless_pool_resets_and_burns_its_dust() {
+        let p = params();
+        let mut pools = vec![Pool::default(); NC];
+        pools[0].value = 1_000_000_000_001; // 1e12 + 1
+        pools[0].shares = DEC;
+        let mm = [0u16; NC];
+
+        let out = settle_round(&mut pools, &mm, 0, &p);
+        assert!(!out[0].reset, "price is just above the threshold");
+        assert!(pools[0].value.saturating_mul(1_000_000) < pools[0].shares);
+
+        let value_before = pools[0].value;
+        pools[0].pending_total = DEC;
+        let out = settle_round(&mut pools, &mm, 1, &p);
+        assert!(out[0].reset);
+        // The evaporation burn plus the reset burn add up to the whole value.
+        assert_eq!(out[0].burned, value_before);
+        assert_eq!(pools[0].value, DEC);
+        assert_eq!(pools[0].shares, DEC);
+        assert_eq!(out[0].sprout, Some((DEC, DEC)));
+    }
+
 }

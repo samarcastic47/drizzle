@@ -17,7 +17,7 @@ use crate::events::{
     DrizzleEvents, PlantEvent, RainDanceEvent, RoundEvent, RoundFailedEvent, SeedEvent, UprootEvent,
 };
 use crate::oracle::{ext_self, IN_FLIGHT_TIMEOUT_SECS};
-use crate::user::{CityState, UserCity};
+use crate::user::{Bucket, CityState, UserCity};
 use crate::views::{
     CityView, InFlightView, RoundLog, RoundStateView, StatsView, UserCityView, UserView,
 };
@@ -44,6 +44,12 @@ pub const MAX_ROUND_LOG_PAGE: u32 = 100;
 pub const ROUND_LOG_RETENTION: u64 = 240;
 /// Live rounds are 3600 s; the data-availability grace after the hour closes.
 pub const LIVE_GRACE_SECS: u64 = 120;
+/// Smallest plant (1 DRIZZLE). Tiny plants would mint zero shares at a high
+/// share price and hand their value to the existing holders.
+pub const MIN_PLANT: u128 = 1_000_000_000_000_000_000;
+/// A plant must produce at least this many shares at the worst post-settlement
+/// price, so its owner cannot be rounded away.
+pub const MIN_SHARES_OUT: u128 = 1_000_000;
 
 /// The one OutLayer request currently in flight.
 #[near(serializers = [borsh, json])]
@@ -67,8 +73,10 @@ pub struct Contract {
     pub users: LookupMap<(AccountId, u8), UserCity>,
     pub seeded: LookupSet<AccountId>,
     pub round_logs: LookupMap<u64, RoundLog>,
-    /// `(round, city) -> (pending_in, shares_out)` for rounds that sprouted.
-    pub sprout_ratio: LookupMap<(u64, u8), (u128, u128)>,
+    /// `(round, city) -> Bucket`: refcounted pending holders plus the settled
+    /// `(pending_in, shares_out)` ratio. Entries are deleted with their last holder,
+    /// so the map is bounded by live planting activity, not by the round count.
+    pub buckets: LookupMap<(u64, u8), Bucket>,
 
     pub next_round: u64,
     pub in_flight: Option<InFlight>,
@@ -79,7 +87,8 @@ pub struct Contract {
     pub seeded_count: u64,
     pub rounds_settled: u64,
 
-    /// Bytes occupied by one account's 12 `UserCity` entries (measured in `new`).
+    /// Bytes occupied by one account's 12 `UserCity` entries plus the 12 bucket
+    /// entries it can pin (measured in `new`).
     pub user_extra_storage: u64,
 }
 
@@ -95,16 +104,20 @@ impl Contract {
         ft.internal_register_account(&env::current_account_id());
 
         let mut users: LookupMap<(AccountId, u8), UserCity> = LookupMap::new(b"us".to_vec());
-        // Measure the storage one account's 12 lazily-created entries occupy, so
-        // `storage_balance_bounds().min` covers a full position set.
+        let mut buckets: LookupMap<(u64, u8), Bucket> = LookupMap::new(b"bk".to_vec());
+        // Measure the storage one account's 12 lazily-created position entries and
+        // the 12 buckets it can pin occupy, so `storage_balance_bounds().min`
+        // covers the worst case without on_weather ever paying for new storage.
         let probe: AccountId = "a".repeat(64).parse().unwrap();
         let before = env::storage_usage();
         for city in 0..NUM_CITIES {
             users.insert(&(probe.clone(), city as u8), &UserCity::default());
+            buckets.insert(&(0u64, city as u8), &Bucket::default());
         }
         let user_extra_storage = env::storage_usage() - before;
         for city in 0..NUM_CITIES {
             users.remove(&(probe.clone(), city as u8));
+            buckets.remove(&(0u64, city as u8));
         }
 
         Self {
@@ -113,7 +126,7 @@ impl Contract {
             users,
             seeded: LookupSet::new(b"s".to_vec()),
             round_logs: LookupMap::new(b"rl".to_vec()),
-            sprout_ratio: LookupMap::new(b"sr".to_vec()),
+            buckets,
             next_round: 0,
             in_flight: None,
             minted: 0,
@@ -162,13 +175,38 @@ impl Contract {
         assert_one_yocto();
         self.assert_city(city);
         let amount = amount.0;
-        require!(amount > 0, "amount must be positive");
+        require!(
+            amount >= MIN_PLANT,
+            "plant amount below the 1 DRIZZLE minimum"
+        );
 
         let account_id = env::predecessor_account_id();
         let mut position = self.users.get(&(account_id.clone(), city)).unwrap_or_default();
+        // Stale shares from a reset pool are worthless and must not count as
+        // "already planted" for the planter bookkeeping.
+        self.sync_epoch(&mut position, city);
+        // Capture this *before* the lazy sprout: a pending that sprouts to zero
+        // shares still means the account was already counted as a planter.
+        let was_planted = self.position_is_planted(&position, city);
         self.sprout_position(&mut position, city);
 
-        let was_planted = position.shares > 0 || position.pending > 0;
+        // Worst-case post-settlement price: this round the pool can receive a
+        // full emission slice plus its jackpot, which is the fewest shares this
+        // amount could ever buy.
+        let pool = self.cities[city as usize].to_pool();
+        if pool.shares > 0 {
+            let worst_value = pool
+                .value
+                .saturating_add(self.cfg.emission_per_round.0)
+                .saturating_add(pool.jackpot);
+            if pool::mul_div(amount, pool.shares, worst_value) < MIN_SHARES_OUT {
+                let min_amount = pool::mul_div(MIN_SHARES_OUT, worst_value, pool.shares) + 1;
+                env::panic_str(&format!(
+                    "city share price too high for this amount; plant at least {min_amount}"
+                ));
+            }
+        }
+
         self.ft.internal_transfer(
             &account_id,
             &env::current_account_id(),
@@ -176,6 +214,7 @@ impl Contract {
             Some("plant".to_string()),
         );
 
+        let new_pending = position.pending == 0;
         let mut pool = self.cities[city as usize].to_pool();
         pool::plant(&mut pool, amount);
         let state = &mut self.cities[city as usize];
@@ -184,8 +223,9 @@ impl Contract {
             state.planters += 1;
         }
 
-        if position.pending == 0 {
+        if new_pending {
             position.pending_round = self.next_round;
+            self.bucket_add_holder(self.next_round, city);
         }
         position.pending += amount;
         self.users.insert(&(account_id.clone(), city), &position);
@@ -209,9 +249,12 @@ impl Contract {
         let account_id = env::predecessor_account_id();
         let key = (account_id.clone(), city);
         let mut position = self.users.get(&key).unwrap_or_default();
+        self.sync_epoch(&mut position, city);
+        // Same as `plant`: a pending that sprouted to zero shares still means the
+        // account is counted in `planters` and must be decremented here.
+        let was_planted = self.position_is_planted(&position, city);
         self.sprout_position(&mut position, city);
 
-        let was_planted = position.shares > 0 || position.pending > 0;
         let requested = match shares {
             Some(shares) => u128::from(shares),
             None => position.shares,
@@ -222,6 +265,15 @@ impl Contract {
         let mut credit = pool::uproot(&mut pool, requested);
         position.shares -= requested;
 
+        if shares.is_some() && position.shares > 0 {
+            // A dust remainder would be rounded to zero value at the next touch.
+            let remaining = pool::shares_value(&pool, position.shares);
+            require!(
+                remaining >= MIN_PLANT,
+                "remaining stake below minimum; uproot all"
+            );
+        }
+
         if shares.is_none() && position.pending > 0 {
             let returned_pending = position.pending;
             pool::unplant_pending(&mut pool, returned_pending);
@@ -230,8 +282,8 @@ impl Contract {
             credit += returned_pending;
         }
 
+        let now_planted = self.position_is_planted(&position, city);
         let state = &mut self.cities[city as usize];
-        let now_planted = position.shares > 0 || position.pending > 0;
         if was_planted && !now_planted {
             state.planters = state.planters.saturating_sub(1);
         }
@@ -425,12 +477,26 @@ impl Contract {
                 }
                 .emit();
             }
-            // One entry per (round, city) that sprouted, i.e. only where someone
-            // planted and only for the round it sprouts in. Lazy sprouting needs
-            // these forever, and the size is bounded by planting activity rather
-            // than by the number of rounds (unlike `RoundLog`, they are not pruned).
+            // The bucket was created (and refcounted) by `plant`; settlement only
+            // fills in its ratio, so on_weather never creates storage entries here.
             if let Some(ratio) = outcome.sprout {
-                self.sprout_ratio.insert(&(round, city as u8), &ratio);
+                let key = (round, city as u8);
+                let mut bucket = self
+                    .buckets
+                    .get(&key)
+                    .expect("settled round must have a sprout bucket");
+                bucket.ratio = Some(ratio);
+                if outcome.reset {
+                    let epoch = self.cities[city].epoch + 1;
+                    self.cities[city].epoch = epoch;
+                    bucket.epoch = epoch;
+                    // Holders of the dead old shares are no longer planters: only
+                    // the pending holders of this round start the new epoch.
+                    self.cities[city].planters = bucket.holders;
+                } else {
+                    bucket.epoch = self.cities[city].epoch;
+                }
+                self.buckets.insert(&key, &bucket);
             }
             minted_log.push(U128(outcome.minted));
             burned_log.push(U128(outcome.burned));
@@ -553,20 +619,27 @@ impl Contract {
                 .users
                 .get(&(account_id.clone(), city))
                 .unwrap_or_default();
-            // Project the pending sprout so the UI never shows stale shares.
-            let (shares, pending) = if position.pending > 0
-                && position.pending_round < self.next_round
+            // Shares from a previous city epoch are worthless.
+            let mut shares = if position.shares > 0
+                && position.epoch != self.cities[city as usize].epoch
             {
-                let ratio = self
-                    .sprout_ratio
-                    .get(&(position.pending_round, city))
-                    .expect("missing sprout ratio");
-                (
-                    position.shares + pool::sprout_user(position.pending, ratio),
-                    0,
-                )
+                0
             } else {
-                (position.shares, position.pending)
+                position.shares
+            };
+            // Project the pending sprout so the UI never shows stale shares.
+            let pending = if position.pending > 0 && position.pending_round < self.next_round {
+                let bucket = self
+                    .buckets
+                    .get(&(position.pending_round, city))
+                    .expect("missing sprout bucket");
+                let ratio = bucket.ratio.expect("sprout bucket was never settled");
+                if bucket.epoch == self.cities[city as usize].epoch {
+                    shares += pool::sprout_user(position.pending, ratio);
+                }
+                0
+            } else {
+                position.pending
             };
             let value = pool::shares_value(&self.cities[city as usize].to_pool(), shares);
             UserCityView {
@@ -638,17 +711,83 @@ impl Contract {
     }
 
     /// Lazily converts settled pending into shares at the stored round ratio.
-    fn sprout_position(&self, position: &mut UserCity, city: u8) {
+    /// Clears shares that belong to a previous city epoch (reset pools).
+    fn sync_epoch(&self, position: &mut UserCity, city: u8) {
+        let epoch = self.cities[city as usize].epoch;
+        if position.shares > 0 && position.epoch != epoch {
+            position.shares = 0;
+        }
+        position.epoch = epoch;
+    }
+
+    /// Whether the account currently counts as a planter of this city.
+    ///
+    /// Pending that settled before a reset belongs to the dead epoch: it will sprout
+    /// to zero shares and the account is not in `planters` (the reset assigned the
+    /// counter to that round's bucket holders only).
+    fn position_is_planted(&self, position: &UserCity, city: u8) -> bool {
+        if position.shares > 0 {
+            return true;
+        }
+        if position.pending == 0 {
+            return false;
+        }
+        if position.pending_round >= self.next_round {
+            return true;
+        }
+        self.buckets
+            .get(&(position.pending_round, city))
+            .map(|bucket| bucket.epoch == self.cities[city as usize].epoch)
+            .unwrap_or(false)
+    }
+
+    /// Lazily converts settled pending into shares using its bucket's ratio.
+    ///
+    /// The bucket is refcounted by its pending holders, so it disappears with the
+    /// last one; this keeps the bucket map bounded by live positions.
+    fn sprout_position(&mut self, position: &mut UserCity, city: u8) {
         if position.pending == 0 || position.pending_round >= self.next_round {
             return;
         }
-        let ratio = self
-            .sprout_ratio
-            .get(&(position.pending_round, city))
-            .expect("missing sprout ratio");
-        position.shares += pool::sprout_user(position.pending, ratio);
+        let round = position.pending_round;
+        let bucket = self
+            .buckets
+            .get(&(round, city))
+            .expect("missing sprout bucket");
+        let ratio = bucket.ratio.expect("sprout bucket was never settled");
+        // Pending that settled before a reset belongs to the dead epoch: the pool
+        // burned its value, so it sprouts to zero shares.
+        if bucket.epoch == self.cities[city as usize].epoch {
+            position.shares += pool::sprout_user(position.pending, ratio);
+            position.epoch = bucket.epoch;
+        }
         position.pending = 0;
         position.pending_round = 0;
+        self.bucket_remove_holder(round, city);
+    }
+
+    fn bucket_add_holder(&mut self, round: u64, city: u8) {
+        let key = (round, city);
+        let mut bucket = self.buckets.get(&key).unwrap_or_default();
+        bucket.holders = bucket
+            .holders
+            .checked_add(1)
+            .unwrap_or_else(|| env::abort());
+        self.buckets.insert(&key, &bucket);
+    }
+
+    fn bucket_remove_holder(&mut self, round: u64, city: u8) {
+        let key = (round, city);
+        let mut bucket = self
+            .buckets
+            .get(&key)
+            .expect("bucket should exist while it has holders");
+        bucket.holders = bucket.holders.saturating_sub(1);
+        if bucket.holders == 0 {
+            self.buckets.remove(&key);
+        } else {
+            self.buckets.insert(&key, &bucket);
+        }
     }
 
     fn credit(&mut self, account_id: &AccountId, amount: u128) {
@@ -669,7 +808,8 @@ impl Contract {
         .emit();
     }
 
-    /// Minimum storage bond: one FT account record plus 12 `UserCity` entries.
+    /// Minimum storage bond: one FT account record plus 12 `UserCity` and 12
+    /// bucket entries.
     fn storage_min(&self) -> NearToken {
         env::storage_byte_cost()
             .saturating_mul((self.ft.account_storage_usage + self.user_extra_storage) as u128)
@@ -707,6 +847,12 @@ impl Contract {
 impl FungibleTokenCore for Contract {
     #[payable]
     fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>) {
+        // Otherwise the tokens would land in the contract's own balance, which is
+        // reserved for pool value + pending and has no rescue path.
+        require!(
+            receiver_id != env::current_account_id(),
+            "can't transfer to the Drizzle contract; use plant"
+        );
         self.ft.ft_transfer(receiver_id, amount, memo)
     }
 
@@ -718,6 +864,10 @@ impl FungibleTokenCore for Contract {
         memo: Option<String>,
         msg: String,
     ) -> PromiseOrValue<U128> {
+        require!(
+            receiver_id != env::current_account_id(),
+            "can't transfer to the Drizzle contract; use plant"
+        );
         self.ft.ft_transfer_call(receiver_id, amount, memo, msg)
     }
 
@@ -742,14 +892,10 @@ impl FungibleTokenResolver for Contract {
         let (used, burned) =
             self.ft
                 .internal_ft_resolve_transfer(&sender_id, receiver_id, amount);
+        // The standard library already emits `ft_burn` for this supply reduction;
+        // only the accounting counter lives here.
         if burned > 0 {
             self.burned += burned;
-            FtBurn {
-                owner_id: &sender_id,
-                amount: U128(burned),
-                memo: Some("resolve_transfer"),
-            }
-            .emit();
         }
         U128(used)
     }
@@ -1113,19 +1259,26 @@ mod tests {
         let mut user_shares = 0u128;
         for user in users {
             for city in 0..NUM_CITIES {
+                let state = &c.cities[city];
                 let position = c
                     .users
                     .get(&(user.clone(), city as u8))
                     .unwrap_or_default();
-                let shares = if position.pending > 0 && position.pending_round < c.next_round {
-                    let ratio = c
-                        .sprout_ratio
-                        .get(&(position.pending_round, city as u8))
-                        .expect("pending past its round must have a sprout ratio");
-                    position.shares + pool::sprout_user(position.pending, ratio)
+                let mut shares = if position.shares > 0 && position.epoch != state.epoch {
+                    0
                 } else {
                     position.shares
                 };
+                if position.pending > 0 && position.pending_round < c.next_round {
+                    let bucket = c
+                        .buckets
+                        .get(&(position.pending_round, city as u8))
+                        .expect("pending past its round must have a bucket");
+                    let ratio = bucket.ratio.expect("settled bucket has a ratio");
+                    if bucket.epoch == state.epoch {
+                        shares += pool::sprout_user(position.pending, ratio);
+                    }
+                }
                 user_shares += shares;
             }
         }
@@ -1599,6 +1752,11 @@ mod tests {
         cfg.replay = false;
         cfg.replay_hours = 0;
         cfg.validate();
+
+        // 100% evaporation would zero a pool while its shares still exist.
+        let mut cfg = test_config();
+        cfg.evap_bps = 10_000;
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
     }
 
     #[test]
@@ -1670,6 +1828,227 @@ mod tests {
         );
         assert!(size > 200 && size < 2_000, "unexpected RoundLog size {size}");
         assert!(cost < 20_000_000_000_000_000_000_000, "log too expensive");
+    }
+
+    fn panic_message(err: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = err.downcast_ref::<String>() {
+            message.clone()
+        } else if let Some(message) = err.downcast_ref::<&str>() {
+            (*message).to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    // ------------------------------------------------------------ F1: share price
+
+    #[test]
+    fn plant_minimum_and_worst_price_guard_reject_dust() {
+        let mut c = setup();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+
+        // 1 yocto is far below MIN_PLANT.
+        set_env("bob.testnet", GENESIS + 1, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.plant(0, U128(1));
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("1 DRIZZLE minimum"));
+
+        // Craft a pool whose shares are worth far more than a 1 DRIZZLE plant.
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 2);
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        c.cities[0].value = 10u128.pow(31);
+
+        set_env("bob.testnet", GENESIS + 70, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.plant(0, U128(DEC));
+        }))
+        .unwrap_err();
+        let message = panic_message(err);
+        assert!(message.contains("share price too high"), "{message}");
+        assert!(message.contains(&format!(
+            "plant at least {}",
+            pool::mul_div(MIN_SHARES_OUT, 10u128.pow(31) + 100 * DEC, DEC) + 1
+        )));
+    }
+
+    #[test]
+    fn high_price_pool_does_not_confiscate_a_new_planter() {
+        let mut c = setup();
+        let u = users();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+
+        // The attacker's minimum plant becomes 1 share of the pool.
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        let mut mm = zero_mm();
+        mm[0] = 10;
+        settle(&mut c, &mm, GENESIS + 2 * ROUND_SECS, "alice.testnet");
+        assert_eq!(c.cities[0].value, 101 * DEC);
+
+        // The victim's 50 DRIZZLE must not be rounded to zero shares.
+        plant(&mut c, "bob.testnet", 0, 50 * DEC, GENESIS + 130);
+        settle(&mut c, &zero_mm(), GENESIS + 3 * ROUND_SECS, "alice.testnet");
+        let got = uproot(&mut c, "bob.testnet", 0, None, GENESIS + 200);
+        assert!(
+            got * 1000 >= 50 * DEC * 999,
+            "victim recovered {got} of {}",
+            50 * DEC
+        );
+        assert_invariants(&c, &u);
+    }
+
+    #[test]
+    fn partial_uproot_that_leaves_dust_is_rejected() {
+        let mut c = setup();
+        seed(&mut c, "alice.testnet", GENESIS);
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        // Craft a near-worthless pool (1 000 yocto over 1e18 shares).
+        c.cities[0].value = 1_000;
+
+        set_env("alice.testnet", GENESIS + 70, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.uproot(0, Some(U128(500_000_000_000_000_000)));
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("remaining stake below minimum"));
+    }
+
+    // ------------------------------------------------------------ F2: planters
+
+    #[test]
+    fn planter_counter_does_not_drift_on_zero_share_sprout() {
+        let mut c = setup();
+        let u = users();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        assert_eq!(planters(&c, 0), 1);
+
+        // Craft bob's 1-yocto pending for round 1; at ~101 DRIZZLE/share it
+        // sprouts to exactly zero shares.
+        let bob = acct("bob.testnet");
+        let contract = acct(CONTRACT_ID);
+        c.ft.internal_transfer(&bob, &contract, 1, None);
+        c.cities[0].pending_total += 1;
+        c.cities[0].planters += 1;
+        c.users.insert(
+            &(bob.clone(), 0),
+            &UserCity {
+                shares: 0,
+                pending: 1,
+                pending_round: 1,
+                epoch: 0,
+            },
+        );
+        c.bucket_add_holder(1, 0);
+
+        let mut mm = zero_mm();
+        mm[0] = 10;
+        settle(&mut c, &mm, GENESIS + 2 * ROUND_SECS, "alice.testnet");
+        assert_eq!(c.buckets.get(&(1, 0)).unwrap().ratio, Some((1, 0)));
+
+        let got = uproot(&mut c, "bob.testnet", 0, None, GENESIS + 130);
+        assert_eq!(got, 0, "the dust sprout was worth zero shares");
+        assert_eq!(
+            planters(&c, 0),
+            1,
+            "the zero-share planter must be decremented"
+        );
+
+        uproot(&mut c, "alice.testnet", 0, None, GENESIS + 131);
+        assert_eq!(planters(&c, 0), 0, "the last-holder sweep must be reachable");
+        assert_eq!(c.cities[0].value, 0);
+        assert_invariants(&c, &u);
+    }
+
+    // ------------------------------------------------------------ F3: buckets
+
+    #[test]
+    fn bucket_map_is_emptied_after_plant_sprout_cycles() {
+        let mut c = setup();
+        seed(&mut c, "alice.testnet", GENESIS);
+        for round in 0..50u64 {
+            plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1 + round);
+            settle(
+                &mut c,
+                &zero_mm(),
+                GENESIS + ROUND_SECS * (round + 1),
+                "alice.testnet",
+            );
+        }
+        // Each plant released the previous round's bucket.
+        for round in 0..49u64 {
+            assert!(
+                c.buckets.get(&(round, 0)).is_none(),
+                "bucket for round {round} leaked"
+            );
+        }
+        // The last one is released when the position sprouts on uproot.
+        uproot(&mut c, "alice.testnet", 0, None, GENESIS + 100);
+        assert!(c.buckets.get(&(49, 0)).is_none(), "last bucket leaked");
+    }
+
+    // ------------------------------------------------------------ F4: epochs
+
+    #[test]
+    fn dead_pool_reset_burns_dust_and_retires_old_shares() {
+        let mut c = setup();
+        let u = users();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+
+        plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 1);
+        // Round 0: zero shares at payout, so the minimum plant just sprouts.
+        settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
+        // Round 1: the only rainy city, so all 100 DRIZZLE go to the pool.
+        let mut mm = zero_mm();
+        mm[0] = 10;
+        settle(&mut c, &mm, GENESIS + 2 * ROUND_SECS, "alice.testnet");
+        assert_eq!(c.cities[0].value, 101 * DEC);
+
+        // Simulate a long dry spell: burn the pool down to dust.
+        let contract = acct(CONTRACT_ID);
+        let drain = c.cities[0].value - 500;
+        c.ft.internal_withdraw(&contract, drain);
+        c.burned += drain;
+        c.cities[0].value = 500;
+        assert_invariants(&c, &u);
+
+        plant(&mut c, "bob.testnet", 0, DEC, GENESIS + 130);
+        settle(&mut c, &zero_mm(), GENESIS + 3 * ROUND_SECS, "alice.testnet");
+        assert_invariants(&c, &u);
+
+        // Round 0 was the first (empty-pool) reset, round 2 the dust reset.
+        assert_eq!(c.cities[0].epoch, 2);
+        assert_eq!(c.cities[0].shares, DEC);
+        assert_eq!(c.cities[0].value, DEC);
+        assert_eq!(planters(&c, 0), 1, "only the new-epoch holder counts");
+        assert_eq!(c.get_round_log(2).unwrap().burned[0].0, 500);
+
+        // The old holder's shares are worthless, but uprooting them is harmless.
+        assert_eq!(c.get_user(acct("alice.testnet")).cities[0].shares.0, 0);
+        assert_eq!(
+            uproot(&mut c, "alice.testnet", 0, None, GENESIS + 130),
+            0
+        );
+        assert_eq!(planters(&c, 0), 1);
+
+        // The new planter sprouted 1:1 at the reset.
+        let bob = &c.get_user(acct("bob.testnet")).cities[0];
+        assert_eq!(bob.shares.0, DEC);
+        assert_eq!(bob.value.0, DEC);
+
+        assert_eq!(uproot(&mut c, "bob.testnet", 0, None, GENESIS + 131), DEC);
+        assert_eq!(planters(&c, 0), 0);
+        assert_eq!(c.cities[0].value, 0);
+        assert_invariants(&c, &u);
     }
 
     #[test]

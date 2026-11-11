@@ -100,7 +100,7 @@ impl Config {
             NUM_CITIES,
             "config: exactly {NUM_CITIES} cities required"
         );
-        assert!(self.evap_bps <= 10_000, "config: evap_bps must be <= 10000");
+        assert!(self.evap_bps < 10_000, "config: evap_bps must be < 10000");
         assert!(
             self.rain_threshold_tenths <= self.cap_tenths,
             "config: rain threshold must be <= storm cap"

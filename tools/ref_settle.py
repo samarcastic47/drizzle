@@ -67,7 +67,7 @@ def settle_round(pools, mm_row, round_no):
         pool = pools[c]
         mm = mm_row[c]
         w = weights[c]
-        outcome = {"minted": 0, "burned": 0, "sprout": None}
+        outcome = {"minted": 0, "burned": 0, "sprout": None, "reset": False}
         pool["last_mm_tenths"] = mm
 
         if w > 0:
@@ -85,16 +85,26 @@ def settle_round(pools, mm_row, round_no):
 
         if pool["pending_total"] > 0:
             pending_in = pool["pending_total"]
-            if pool["shares"] == 0 or pool["value"] == 0:
-                # Worthless pool: old shares are worthless, sprout 1:1.
+            reset = (
+                pool["shares"] == 0
+                or pool["value"] == 0
+                or pool["value"] * 1_000_000 < pool["shares"]
+            )
+            if reset:
+                # Empty or worthless pool (price below 1e-6): old shares are dead,
+                # so burn the remaining dust and sprout 1:1.
+                outcome["burned"] += pool["value"]
+                pool["value"] = 0
                 pool["shares"] = 0
                 shares_out = pending_in
             else:
+                # Not resetting implies value * 1e6 >= shares.
                 shares_out = mul_div(pending_in, pool["shares"], pool["value"])
             pool["value"] += pending_in
             pool["shares"] += shares_out
             pool["pending_total"] = 0
             outcome["sprout"] = (pending_in, shares_out)
+            outcome["reset"] = reset
 
         outcomes.append(outcome)
     return outcomes

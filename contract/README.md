@@ -86,8 +86,8 @@ All names, arguments, deposits, views, `RoundLog` and events are in
 |---|---|---|
 | `new(config)` | init, private | validates 12 cities, `evap_bps <= 10000`, threshold <= cap, `round_seconds > 0` |
 | `claim_seed()` | payable | registers storage if needed (bond refunded above the minimum), mints 100 DRIZZLE once |
-| `plant(city, amount)` | 1 yocto | FT transfer user -> contract, becomes pending, sprouts after `next_round` settles |
-| `uproot(city, shares?)` | 1 yocto | `null` = all shares + unsprouted pending; last holder sweeps the pool |
+| `plant(city, amount)` | 1 yocto | `amount >= 1 DRIZZLE`; rejected when the worst-case share price would round it below `MIN_SHARES_OUT` (1e6 shares). FT transfer user -> contract, becomes pending, sprouts after `next_round` settles |
+| `uproot(city, shares?)` | 1 yocto | `null` = all shares + unsprouted pending; a partial uproot must leave 0 shares or >= 1 DRIZZLE of value; last holder sweeps the pool |
 | `rain_dance(city, amount)` | 1 yocto | burns the caller's tokens into the city jackpot |
 | `tick()` | payable (`oracle.deposit`) | one request at a time; 600 s self-expiry; `.then(on_weather)` |
 | `on_weather(round, keeper)` | private callback | settles 12 pools, mints/burns, stores `RoundLog` |
@@ -104,14 +104,20 @@ balance is exactly `Σ pool.value + Σ pool.pending_total`:
 - `rain_dance`: burn from the user; seed and keeper tip: mint to user/keeper.
 - sprout dust (floor rounding in shares) stays in `pool.value`, which is why the
   last holder receives the whole remaining pool value when `planters` hits 0.
+- when a pool becomes worthless (price below 1e-6, or empty), settlement resets
+  it: the remaining dust is burned, old shares are retired via a city `epoch`
+  bump (uprooting them returns 0 instead of panicking) and the round's pending
+  sprouts 1:1. `planters` is then exactly that round's pending holders.
+- `ft_transfer` / `ft_transfer_call` to the contract account are rejected
+  (`use plant`), so tokens can never be stranded outside the pool accounting.
 
 ## Storage
 
 `storage_balance_bounds().min` is the bond for one FT account **plus** the 12
 lazily created `UserCity` entries, measured with `env::storage_usage()` during
-`new()`. On `near-sandbox` it is **19 380 000 000 000 000 000 000 yoctoNEAR
-(0.01938 NEAR)** for 1 938 bytes; that covers a 64-character account id, which is
-the worst case. Excess deposits are refunded; `storage_unregister` refunds the
+`new()`. On `near-sandbox` it is **27 060 000 000 000 000 000 000 yoctoNEAR
+(0.02706 NEAR)** for 2 706 bytes; that covers a 64-character account id plus the
+12 refcounted sprout buckets the account can pin, which is the worst case. Excess deposits are refunded; `storage_unregister` refunds the
 bond and requires city positions to be uprooted first.
 
 ## Gas
@@ -121,14 +127,14 @@ Measured on `near-sandbox` by `tests/sandbox.rs` (mock OutLayer, so the
 
 | Scenario | `tick()` tx total | `on_weather` receipt |
 |---|---|---|
-| round 0: 12 pending sprout, 0 payouts | 8.325 Tgas | 3.590 Tgas |
-| round 1: 12 payouts, 1 planter | 10.312 Tgas | 5.556 Tgas |
-| round 2: same, 50 planters | 10.420 Tgas | 5.664 Tgas |
-| 2-city round (settle test) | 7.417–7.770 Tgas | 2.686–3.026 Tgas |
+| round 0: 12 pending sprout, 0 payouts | 9.421 Tgas | 4.680 Tgas |
+| round 1: 12 payouts, 1 planter | 10.442 Tgas | 5.680 Tgas |
+| round 2: same, 50 planters | 10.570 Tgas | 5.808 Tgas |
+| 2-city round (settle test) | 7.652–7.807 Tgas | 2.912–3.053 Tgas |
 
-`on_weather` is ~5.7 Tgas with every city paying out, far below the 60 Tgas
-attached to the callback, and the 1-vs-50 comparison moves it by ~0.1 Tgas:
-settlement is O(cities), not O(users).
+`on_weather` is ~5.8 Tgas with every city paying out (well under the 15 Tgas
+budget and the 60 Tgas attached to the callback), and the 1-vs-50 comparison
+moves it by ~0.13 Tgas: settlement is O(cities), not O(users).
 
 ## Notes / known limits
 
@@ -142,6 +148,8 @@ settlement is O(cities), not O(users).
 - `RoundLog` storage is pruned to the newest `ROUND_LOG_RETENTION = 240` rounds
   inside `on_weather`; `get_round_log` returns `null` for a pruned round and
   `get_round_state.oldest_round_log` tells clients where the window starts.
-  `sprout_ratio` entries are *not* pruned: they exist only for `(round, city)`
-  pairs that had pending, which is bounded by planting activity, and lazy
-  sprouting needs them forever.
+- Sprout ratios live in refcounted `Bucket` entries, one per `(round, city)` that
+  had pending. The bucket is created by the first `plant` of that round and
+  deleted when its last holder sprouts, so the map is bounded by live positions,
+  not by the number of rounds, and the registration bond pre-pays the 12 buckets
+  an account can pin.
