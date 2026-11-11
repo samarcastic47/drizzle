@@ -75,7 +75,7 @@ export function App() {
               <p className="form-error">{loadError}</p>
               <p className="muted tiny">
                 The page is a static export; reads go straight from your browser to{' '}
-                <code>{process.env.NEXT_PUBLIC_RPC_URL || 'https://rpc.testnet.near.org'}</code>.
+                <code>{process.env.NEXT_PUBLIC_RPC_URL || 'https://test.rpc.fastnear.com'}</code>.
               </p>
               <button className="btn" onClick={() => void refresh()}>
                 Retry

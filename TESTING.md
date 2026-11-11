@@ -1,5 +1,7 @@
 # Manual test guide (testnet)
 
+
+Running services (in the omp session, persistent): `drizzle-web` (http://localhost:4321), `drizzle-keeper` (replay, every 10 s), `drizzle-keeper-live` (live, every 30 s). Logs: `/tmp/keeper-replay.log`, `/tmp/keeper-live.log`. Browser reads use `https://test.rpc.fastnear.com` (`rpc.testnet.near.org` is deprecated and rate-limits).
 The site runs locally at **http://localhost:4321** (a static build pointed at NEAR testnet RPC).
 Contracts: `drizzle-replay.testnet` (1 round = 60 s, replays 2026-09-24 … 09-30 in a loop) and `drizzle-live.testnet` (1 round = 1 real hour).
 A keeper (`drizzle-dev.testnet`) ticks the replay contract automatically, so a round settles about every minute.
@@ -37,5 +39,5 @@ near account list-keys drizzle-replay.testnet network-config testnet now
 ```
 
 ## Stop / restart
-- Keeper: `proc://drizzle-keeper` in the omp session, or `pkill -f "keeper.js --contract drizzle-replay"`.
+- Keepers: `pkill -f "keeper.js --contract drizzle-"` (stops both). Each tick costs ~0.0024 NEAR from drizzle-dev.
 - Web server: `pkill -f "serve out -l 4321"`; restart with `cd web && pnpm build && pnpm start`.

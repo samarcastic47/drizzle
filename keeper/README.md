@@ -88,7 +88,7 @@ message telling you what is missing. `--dry-run` needs no credentials at all.
 ## Example output
 
 ```
-2026-11-11T12:00:05Z drizzle keeper starting — contract=drizzle-replay.testnet network=testnet rpc=https://rpc.testnet.near.org interval=10s mode=signing as drizzle-dev.testnet
+2026-11-11T12:00:05Z drizzle keeper starting — contract=drizzle-replay.testnet network=testnet rpc=https://test.rpc.fastnear.com interval=10s mode=signing as drizzle-dev.testnet
 2026-11-11T12:00:06Z config loaded — round_seconds=60 replay=true oracle=outlayer.testnet deposit=0.004500 NEAR
 2026-11-11T12:00:16Z round=12 hour=2026-09-24T12:00Z result=settled request_id=22023 tx=7T2fBww6cqcMJQw7RNoevLT7oVCZPmJSVKLPtjYyFaoY spent=0.001910 NEAR total=0.001910 NEAR ticks/hour=1
 ```

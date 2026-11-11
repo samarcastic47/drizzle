@@ -37,8 +37,8 @@ const STOP_BALANCE = 1n * 10n ** 23n; // 0.1 NEAR
 const DEFAULT_INTERVAL_SEC = 10;
 
 const RPC_URLS: Record<string, string> = {
-  testnet: 'https://rpc.testnet.near.org',
-  mainnet: 'https://rpc.mainnet.near.org',
+  testnet: 'https://test.rpc.fastnear.com',
+  mainnet: 'https://free.rpc.fastnear.com',
 };
 
 const USAGE = `drizzle keeper — tick the Drizzle contract whenever a round is due

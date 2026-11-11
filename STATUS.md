@@ -5,9 +5,10 @@ _Updated: 2026-11-11 (session start)_
 ## Now
 | WP | Agent | State |
 |---|---|---|
-| WP-0 Setup | orchestrator + human | Toolchain complete (Rust 1.85 + wasm targets, cargo-near 0.23, near-cli-rs 0.31.1, wasmtime 50, outlayer 0.2.3, pnpm 12.18). Waiting on human: `drizzle-replay.testnet` |
-| WP-6 Deploy replay | orchestrator | `drizzle-replay.testnet` deployed + initialised (genesis 1794401153). Rounds 0–5 settled via real OutLayer, on-chain invariants verified. Keeper fix (408 on FINAL wait, hour format) with WP7Keeper; then a 30-min unattended run |
-| WP-9 Review | reviewer + security-reviewer done; WP5Contract applying S1–S4, S7 | Reviewer verdict "incorrect" → F1–F6 fixed (commit "review fixes F1-F6", 40 unit tests). Security: 2 Medium + 5 Low; fixes in progress. Re-review after |
+| WP-0 Setup | done | Toolchain complete |
+| WP-6 Deploy replay | orchestrator | FINAL contract (sha256 fe779482…1001) deployed fresh to `drizzle-replay.testnet` (account reset via faucet) and `drizzle-live.testnet` (live, first_hour 498446). Keepers run as persistent services `drizzle-keeper` / `drizzle-keeper-live` on fastnear RPC; web served at http://localhost:4321 (`drizzle-web`). Human manual test pending (TESTING.md) |
+| WP-9 Review | done | Re-review: all F/S items closed; final batch R1 (dead shares 1e12, guard → ≥1 share), R2 (live exit after close+24 h), R3 (config bounds), R4 (re-registration discount). 46 unit tests |
+| Next | – | After the human's test: delete keys (human OK), hosting (human), video/X/submission |
 
 ## Done
 - WP-1 Doc scout: `docs/notes/outlayer.md`. It confirms the live 7-arg `request_execution` ABI from the chain schema, the raw-stdout callback (no wrapper), the `NEAR_REQUEST_ID` env var for the guest, `WasmUrl` hash checks inside the enclave, the ≈0.0045 NEAR estimate for a 30 s job, and the attestation URL `https://app.outlayer.ai/attestation/{id}` (id mapping unverified).
