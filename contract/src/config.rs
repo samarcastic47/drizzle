@@ -82,6 +82,9 @@ pub struct Config {
     pub genesis_ts: u64,
     pub first_hour: u64,
     pub replay: bool,
+    /// Replay only: the real hours are replayed in a loop of this length.
+    /// `0` for live games (and then round `r` uses hour `first_hour + r`).
+    pub replay_hours: u64,
 
     pub oracle: OracleConfig,
 }
@@ -104,6 +107,17 @@ impl Config {
         );
         assert!(self.round_seconds > 0, "config: round_seconds must be > 0");
         assert!(self.decimals > 0, "config: decimals must be > 0");
+        if self.replay {
+            assert!(
+                self.replay_hours > 0,
+                "config: replay games need replay_hours > 0"
+            );
+        } else {
+            assert_eq!(
+                self.replay_hours, 0,
+                "config: live games need replay_hours == 0"
+            );
+        }
         for (i, c) in self.cities.iter().enumerate() {
             assert!(
                 (-900_000..=900_000).contains(&c.lat_e4),
@@ -114,6 +128,20 @@ impl Config {
                 "config: city {i} longitude out of range"
             );
         }
+    }
+
+    /// The real unix hour that round `round` observes.
+    ///
+    /// Replay loops over the first `replay_hours` historical hours so the game can
+    /// run forever (Open-Meteo has no data for future hours); live games advance
+    /// one real hour per round.
+    pub fn hour_for_round(&self, round: u64) -> u64 {
+        let offset = if self.replay_hours > 0 {
+            round % self.replay_hours
+        } else {
+            round
+        };
+        self.first_hour + offset
     }
 
     /// Parameters for the pure pool math.

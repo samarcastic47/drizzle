@@ -45,6 +45,7 @@ ORACLE_URL = (
 ORACLE_HASH = "7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b"
 
 REPLAY_FIRST_HOUR = 497280  # 2026-09-24T00:00Z
+REPLAY_HOURS = 168  # 2026-09-24T00:00Z .. 2026-09-30T23:00Z, replayed in a loop
 
 
 def build_config(replay: bool, genesis_ts: int) -> dict:
@@ -75,6 +76,7 @@ def build_config(replay: bool, genesis_ts: int) -> dict:
             "genesis_ts": genesis_ts,
             "first_hour": first_hour,
             "replay": replay,
+            "replay_hours": REPLAY_HOURS if replay else 0,
             "oracle": {
                 "outlayer": "outlayer.testnet",
                 "source": {

@@ -8,7 +8,7 @@ use near_sdk::{near, AccountId};
 #[derive(Clone, Debug)]
 pub struct RoundLog {
     pub round: u64,
-    /// Unix hour this round covers (`first_hour + round`).
+    /// Unix hour this round observes (`first_hour + round`, looped in replay).
     pub hour: u64,
     pub mm_tenths: Vec<u16>,
     /// Pool mints per city, jackpot payout included.
@@ -40,6 +40,8 @@ pub struct InFlightView {
 pub struct RoundStateView {
     pub next_round: u64,
     pub next_hour: u64,
+    /// Oldest round that still has a `RoundLog` (`next_round - 240`, or 0).
+    pub oldest_round_log: u64,
     pub due_at: u64,
     pub in_flight: Option<InFlightView>,
     pub now: u64,

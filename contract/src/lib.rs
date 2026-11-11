@@ -39,6 +39,9 @@ use near_sdk::{
 
 /// Hard cap on `get_round_logs` (interface).
 pub const MAX_ROUND_LOG_PAGE: u32 = 100;
+/// How many settled rounds keep a `RoundLog`. Each log costs ~0.009 NEAR of
+/// storage staking, so an unbounded map would eventually brick the contract.
+pub const ROUND_LOG_RETENTION: u64 = 240;
 /// Live rounds are 3600 s; the data-availability grace after the hour closes.
 pub const LIVE_GRACE_SECS: u64 = 120;
 
@@ -327,7 +330,7 @@ impl Contract {
             Promise::new(keeper.clone()).transfer(refund).detach();
         }
 
-        let input = oracle::build_input(self.cfg.first_hour + round, &self.cfg.cities);
+        let input = oracle::build_input(self.cfg.hour_for_round(round), &self.cfg.cities);
         oracle::request_promise(
             self.cfg.oracle.outlayer.clone(),
             &self.cfg.oracle.source,
@@ -379,7 +382,7 @@ impl Contract {
             return;
         }
 
-        let expected_hour = self.cfg.first_hour + round;
+        let expected_hour = self.cfg.hour_for_round(round);
         let payload = match result {
             Ok(Some(value)) => value,
             Ok(None) => return self.fail_round(round, "outlayer returned null"),
@@ -422,6 +425,10 @@ impl Contract {
                 }
                 .emit();
             }
+            // One entry per (round, city) that sprouted, i.e. only where someone
+            // planted and only for the round it sprouts in. Lazy sprouting needs
+            // these forever, and the size is bounded by planting activity rather
+            // than by the number of rounds (unlike `RoundLog`, they are not pruned).
             if let Some(ratio) = outcome.sprout {
                 self.sprout_ratio.insert(&(round, city as u8), &ratio);
             }
@@ -461,7 +468,7 @@ impl Contract {
         let settled_ts = env::block_timestamp() / 1_000_000_000;
         let log_entry = RoundLog {
             round,
-            hour: reading.hour,
+            hour: self.cfg.hour_for_round(round),
             mm_tenths: reading.mm_tenths.clone(),
             minted: minted_log,
             burned: burned_log,
@@ -474,6 +481,10 @@ impl Contract {
             settled_ts,
         };
         self.round_logs.insert(&round, &log_entry);
+        // Keep only the newest `ROUND_LOG_RETENTION` logs.
+        if round >= ROUND_LOG_RETENTION {
+            self.round_logs.remove(&(round - ROUND_LOG_RETENTION));
+        }
 
         DrizzleEvents::Round(vec![RoundEvent {
             round,
@@ -500,7 +511,8 @@ impl Contract {
         let next_round = self.next_round;
         RoundStateView {
             next_round,
-            next_hour: self.cfg.first_hour + next_round,
+            next_hour: self.cfg.hour_for_round(next_round),
+            oldest_round_log: next_round.saturating_sub(ROUND_LOG_RETENTION),
             due_at: self.due_at(next_round),
             in_flight: self.in_flight.as_ref().map(|f| InFlightView {
                 round: f.round,
@@ -883,6 +895,7 @@ mod tests {
     const GENESIS: u64 = 1_000;
     const FIRST_HOUR: u64 = 497_280;
     const ROUND_SECS: u64 = 60;
+    const REPLAY_HOURS: u64 = 168;
 
     fn acct(name: &str) -> AccountId {
         name.parse().unwrap()
@@ -929,6 +942,7 @@ mod tests {
             genesis_ts: GENESIS,
             first_hour: FIRST_HOUR,
             replay: true,
+            replay_hours: REPLAY_HOURS,
             oracle: OracleConfig {
                 outlayer: acct("outlayer.testnet"),
                 source: ExecutionSource::WasmUrl(WasmUrlSource {
@@ -1035,7 +1049,7 @@ mod tests {
 
     fn payload(round: u64, mm: &[u16; NUM_CITIES]) -> Vec<u8> {
         near_sdk::serde_json::to_vec(&json!({
-            "hour": FIRST_HOUR + round,
+            "hour": FIRST_HOUR + round % REPLAY_HOURS,
             "mm_tenths": mm,
             "source": "open-meteo",
             "outlayer_request_id": format!("{}", 22_000 + round),
@@ -1540,6 +1554,7 @@ mod tests {
         set_env("alice.testnet", 10_000_000, 0);
         let mut cfg = test_config();
         cfg.replay = false;
+        cfg.replay_hours = 0;
         cfg.round_seconds = 3600;
         cfg.first_hour = 498_000;
         let c = Contract::new(cfg);
@@ -1549,6 +1564,112 @@ mod tests {
         assert_eq!(state.next_hour, 498_000);
         assert_eq!(state.next_round, 0);
         assert!(state.now < state.due_at, "test clock must be before the due time");
+    }
+
+    #[test]
+    fn replay_hours_loop_the_historical_week() {
+        let c = setup();
+        assert_eq!(c.cfg.hour_for_round(167), FIRST_HOUR + 167);
+        assert_eq!(c.cfg.hour_for_round(168), FIRST_HOUR);
+        assert_eq!(c.cfg.hour_for_round(400), FIRST_HOUR + 64);
+        assert_eq!(c.get_round_state().next_hour, FIRST_HOUR);
+
+        // Live games have no loop.
+        reset_storage();
+        set_env("alice.testnet", 10_000_000, 0);
+        let mut cfg = test_config();
+        cfg.replay = false;
+        cfg.replay_hours = 0;
+        let live = Contract::new(cfg);
+        assert_eq!(live.cfg.hour_for_round(5), FIRST_HOUR + 5);
+        assert_eq!(live.cfg.hour_for_round(400), FIRST_HOUR + 400);
+    }
+
+    #[test]
+    fn config_validation_checks_replay_hours() {
+        let mut cfg = test_config();
+        cfg.replay_hours = 0;
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        let mut cfg = test_config();
+        cfg.replay = false;
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        let mut cfg = test_config();
+        cfg.replay = false;
+        cfg.replay_hours = 0;
+        cfg.validate();
+    }
+
+    #[test]
+    fn on_weather_rejects_the_unwrapped_hour_at_the_loop_boundary() {
+        let mut c = setup();
+        c.next_round = 168;
+        let due = GENESIS + 169 * ROUND_SECS;
+        set_env("alice.testnet", due, ORACLE_DEPOSIT);
+        let _ = c.tick();
+
+        // Round 168 maps back to FIRST_HOUR, so FIRST_HOUR + 168 is wrong.
+        let bytes = near_sdk::serde_json::to_vec(&json!({
+            "hour": FIRST_HOUR + 168,
+            "mm_tenths": zero_mm().to_vec(),
+            "source": "open-meteo",
+        }))
+        .unwrap();
+        callback_env(due + 5, PromiseResult::Successful(bytes));
+        let result = callback_result();
+        c.on_weather(168, acct("alice.testnet"), result);
+        assert_eq!(c.next_round, 168, "a wrong hour must not settle the round");
+        assert!(c.in_flight.is_none());
+        assert!(c.get_round_log(168).is_none());
+
+        // The looped hour settles normally.
+        settle(&mut c, &zero_mm(), due + ROUND_SECS, "alice.testnet");
+        assert_eq!(c.next_round, 169);
+        assert_eq!(c.get_round_log(168).unwrap().hour, FIRST_HOUR);
+    }
+
+    #[test]
+    fn round_logs_are_pruned_to_the_retention_window() {
+        let mut c = setup();
+        for round in 0..(ROUND_LOG_RETENTION + 5) {
+            settle(
+                &mut c,
+                &zero_mm(),
+                GENESIS + ROUND_SECS * (round + 1),
+                "alice.testnet",
+            );
+        }
+        assert_eq!(c.next_round, ROUND_LOG_RETENTION + 5);
+        let state = c.get_round_state();
+        assert_eq!(state.oldest_round_log, 5);
+        for round in 0..5 {
+            assert!(
+                c.get_round_log(round).is_none(),
+                "round {round} should be pruned"
+            );
+        }
+        assert!(c.get_round_log(5).is_some());
+        assert!(c.get_round_log(ROUND_LOG_RETENTION + 4).is_some());
+        // Pruned rounds are skipped by the range query.
+        let from_zero = c.get_round_logs(0, 100);
+        assert_eq!(from_zero.len(), 95);
+        assert_eq!(from_zero[0].round, 5);
+        let stored = c.get_round_logs(5, 100);
+        assert_eq!(stored.len(), 100);
+        assert_eq!(stored[0].round, 5);
+        assert_eq!(stored[99].round, 104);
+
+        // One full RoundLog: 12 cities, 4 U128 arrays, keeper, request id.
+        let log = c.get_round_log(ROUND_LOG_RETENTION + 4).unwrap();
+        let size = near_sdk::borsh::to_vec(&log).unwrap().len();
+        let cost = env::storage_byte_cost().as_yoctonear() * size as u128;
+        println!(
+            "RoundLog borsh size: {size} bytes; storage stake: {cost} yocto ({:.6} NEAR)",
+            cost as f64 / 1e24
+        );
+        assert!(size > 200 && size < 2_000, "unexpected RoundLog size {size}");
+        assert!(cost < 20_000_000_000_000_000_000_000, "log too expensive");
     }
 
     #[test]
@@ -1562,8 +1683,10 @@ mod tests {
         assert!(value["oracle"]["source"]["WasmUrl"]["hash"].is_string());
         assert_eq!(value["oracle"]["resource_limits"]["max_memory_mb"], 64);
         assert_eq!(value["replay"], true);
+        assert_eq!(value["replay_hours"], REPLAY_HOURS);
         let state = near_sdk::serde_json::to_value(c.get_round_state()).unwrap();
         assert_eq!(state["next_round"], 0);
         assert_eq!(state["due_at"], GENESIS + ROUND_SECS);
+        assert_eq!(state["oldest_round_log"], 0);
     }
 }

@@ -22,11 +22,13 @@ get_config(): {
   emission_per_round: U128, evap_bps: number, rain_threshold_tenths: number, cap_tenths: number,
   seed_amount: U128, keeper_tip: U128,
   round_seconds: number, genesis_ts: number, first_hour: number, replay: boolean,
+  replay_hours: number,   // replay: real hours loop over [first_hour, first_hour+replay_hours); 0 = live
   oracle: { outlayer: string, source: object, resource_limits: object, deposit: U128 }
 }
 get_round_state(): {
   next_round: number,        // round to settle next
-  next_hour: number,         // unix hour of next_round (= first_hour + next_round)
+  next_hour: number,         // unix hour of next_round (looped in replay, see replay_hours)
+  oldest_round_log: number,  // oldest round still stored (next_round - 240, or 0)
   due_at: number,            // unix secs when tick() becomes allowed
   in_flight: { round: number, started_ts: number } | null,
   now: number                // block timestamp, secs
@@ -47,8 +49,9 @@ get_user({ account_id }): {
     pending_round: number | null
   }[]                        // always 12 entries
 }
-get_round_log({ round }): RoundLog | null
-get_round_logs({ from, limit }): RoundLog[]   // ascending by round, limit ≤ 100
+get_round_log({ round }): RoundLog | null       // null also for pruned rounds (< oldest_round_log)
+get_round_logs({ from, limit }): RoundLog[]     // ascending by round, limit ≤ 100; skips pruned rounds
+// Only the newest 240 round logs are stored (each costs ~0.009 NEAR of storage staking).
 get_stats(): { total_supply: U128, minted: U128, burned: U128, danced: U128, seeded_count: number, rounds_settled: number }
 
 RoundLog = {

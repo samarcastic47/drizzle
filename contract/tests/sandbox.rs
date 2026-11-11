@@ -84,6 +84,7 @@ fn config_json(oracle: &near_workspaces::AccountId, replay: bool, genesis_ts: u6
             "genesis_ts": genesis_ts,
             "first_hour": FIRST_HOUR,
             "replay": replay,
+            "replay_hours": if replay { 168 } else { 0 },
             "oracle": {
                 "outlayer": oracle.to_string(),
                 "source": {

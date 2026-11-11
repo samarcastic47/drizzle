@@ -72,7 +72,10 @@ Live values baked into `scripts/init_args.py`:
 - resource limits: 5 000 000 000 instructions / 64 MB / 20 s; deposit 0.01 NEAR
 - emission 100 DRIZZLE/round, evaporation 10 bps, rain threshold 0.2 mm, storm cap 5.0 mm,
   seed 100 DRIZZLE, keeper tip 1 DRIZZLE
-- replay: 60 s rounds from hour 497280 (2026-09-24T00:00Z); live: 3600 s rounds
+- replay: 60 s rounds looping over the 168 historical hours from hour 497280
+  (2026-09-24T00:00Z … 2026-09-30T23:00Z); live: 3600 s rounds, `replay_hours = 0`.
+  Round `r` observes `first_hour + r % replay_hours`, so replay never asks
+  Open-Meteo for a future (or >16-day-old) hour.
 
 ## Methods
 
@@ -118,9 +121,9 @@ Measured on `near-sandbox` by `tests/sandbox.rs` (mock OutLayer, so the
 
 | Scenario | `tick()` tx total | `on_weather` receipt |
 |---|---|---|
-| round 0: 12 pending sprout, 0 payouts | 8.320 Tgas | 3.588 Tgas |
-| round 1: 12 payouts, 1 planter | 10.307 Tgas | 5.553 Tgas |
-| round 2: same, 50 planters | 10.414 Tgas | 5.661 Tgas |
+| round 0: 12 pending sprout, 0 payouts | 8.325 Tgas | 3.590 Tgas |
+| round 1: 12 payouts, 1 planter | 10.312 Tgas | 5.556 Tgas |
+| round 2: same, 50 planters | 10.420 Tgas | 5.664 Tgas |
 | 2-city round (settle test) | 7.417–7.770 Tgas | 2.686–3.026 Tgas |
 
 `on_weather` is ~5.7 Tgas with every city paying out, far below the 60 Tgas
@@ -134,4 +137,11 @@ settlement is O(cities), not O(users).
 - The contract cannot know the `outlayer_request_id` by itself; the oracle echoes
   `NEAR_REQUEST_ID` in its stdout, which is what rounds carry.
 - Replay mode uses historical hours (a player can look them up); live mode is the
-  real forecasting game.
+  real forecasting game. In replay, hours loop every `config.replay_hours`
+  (168), so rounds can run forever.
+- `RoundLog` storage is pruned to the newest `ROUND_LOG_RETENTION = 240` rounds
+  inside `on_weather`; `get_round_log` returns `null` for a pruned round and
+  `get_round_state.oldest_round_log` tells clients where the window starts.
+  `sprout_ratio` entries are *not* pruned: they exist only for `(round, city)`
+  pairs that had pending, which is bounded by planting activity, and lazy
+  sprouting needs them forever.
