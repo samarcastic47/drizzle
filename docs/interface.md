@@ -6,8 +6,8 @@ All `U128` values are JSON decimal strings. All timestamps are unix **seconds** 
 | Method | Deposit | Args | Notes |
 |---|---|---|---|
 | `claim_seed()` | `storage_balance_bounds().min` (0.03199 NEAR) if unregistered, else 0; excess refunded | – | Registers storage if needed; mints `seed_amount` once per account, ever (unregister doesn't reset it); panics `"already seeded"` |
-| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | `amount >= 1e18` (1 DRIZZLE); rejected when the worst-case post-settlement price would mint < 1e6 shares (`"city share price too high…"`). Moves balance → user pending; sprouts after round `next_round` settles. Live mode only: panics `"round closing: wait for settlement"` once `now >= (hour_for_round(next_round)+1)*3600` (replay is exempt) |
-| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). A partial uproot must leave 0 shares or >= 1 DRIZZLE of value, else `"remaining stake below minimum; uproot all"`. Same live-mode close freeze as `plant`. Returns U128 credited |
+| `plant(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | `amount >= 1e18` (1 DRIZZLE); rejected when the worst-case post-settlement price would mint < 1 share (`"city share price too high…"`). Moves balance → user pending; sprouts after round `next_round` settles. Live mode only: panics `"round closing: wait for settlement"` once `now >= (hour_for_round(next_round)+1)*3600` (replay is exempt) |
+| `uproot(city, shares)` | 1 yocto | `{ "city": u8, "shares": U128 \| null }` | `null` = everything (all shares + unsprouted pending). A partial uproot must leave 0 shares or >= 1 DRIZZLE of value, else `"remaining stake below minimum; uproot all"`. Same live-mode close freeze as `plant`, except `uproot(…, null)` is allowed once `now >= close + 86_400` (exit hatch if settlement is stuck). Returns U128 credited |
 | `rain_dance(city, amount)` | 1 yocto | `{ "city": u8, "amount": U128 }` | Burns from balance, adds to jackpot. Never frozen by the round-close window |
 | `tick()` | `oracle.deposit` | – | Anyone. Returns promise; panics `"round not due"` / `"tick in flight"` |
 | `on_weather(round, keeper)` | – | private callback | Not callable directly |
@@ -36,6 +36,8 @@ get_round_state(): {
 get_cities(): {
   index: number, name: string, lat_e4: number, lon_e4: number,
   value: U128, shares: U128, pending_total: U128, jackpot: U128,
+  // `shares` includes DEAD_SHARES (1e12) owned by nobody after any 1:1 pool
+  // (re)start; the price V/S therefore includes them.
   planters: number,          // accounts with shares > 0 or pending > 0 in this city
   last_rain_round: number | null, last_mm_tenths: number
 }[]

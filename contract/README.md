@@ -86,8 +86,8 @@ All names, arguments, deposits, views, `RoundLog` and events are in
 |---|---|---|
 | `new(config)` | init, private | validates 12 cities, `evap_bps <= 10000`, threshold <= cap, `round_seconds > 0` |
 | `claim_seed()` | payable | registers storage if needed (bond refunded above the minimum), mints 100 DRIZZLE once |
-| `plant(city, amount)` | 1 yocto | `amount >= 1 DRIZZLE`; rejected when the worst-case share price would round it below `MIN_SHARES_OUT` (1e6 shares). FT transfer user -> contract, becomes pending, sprouts after `next_round` settles. Live mode freezes it once the round's hour closes |
-| `uproot(city, shares?)` | 1 yocto | `null` = all shares + unsprouted pending; a partial uproot must leave 0 shares or >= 1 DRIZZLE of value; last holder sweeps the pool; same live-mode close freeze |
+| `plant(city, amount)` | 1 yocto | `amount >= 1 DRIZZLE`; rejected when the worst-case share price would round it to zero shares. FT transfer user -> contract, becomes pending, sprouts after `next_round` settles. Live mode freezes it once the round's hour closes |
+| `uproot(city, shares?)` | 1 yocto | `null` = all shares + unsprouted pending; a partial uproot must leave 0 shares or >= 1 DRIZZLE of value; last holder sweeps the pool; same live-mode close freeze (full exit still allowed after close + 86 400 s) |
 | `rain_dance(city, amount)` | 1 yocto | burns the caller's tokens into the city jackpot |
 | `tick()` | payable (`oracle.deposit`) | one request at a time; 600 s self-expiry; `.then(on_weather)` |
 | `on_weather(round, keeper)` | private callback | settles 12 pools, mints/burns, stores `RoundLog` |
@@ -108,12 +108,22 @@ balance is exactly `Σ pool.value + Σ pool.pending_total`:
   it: the remaining dust is burned, old shares are retired via a city `epoch`
   bump (uprooting them returns 0 instead of panicking) and the round's pending
   sprouts 1:1. `planters` is then exactly that round's pending holders.
+- every 1:1 (re)start also mints `DEAD_SHARES = 1e12` unowned shares into the
+  pool. They stop a sole holder from shrinking `pool.shares` with partial uproots
+  and inflating the price until `plant` rejects everyone. Their value share stays
+  unowned (swept by the last holder, or burned by a reset).
 - `ft_transfer` / `ft_transfer_call` to the contract account are rejected
   (`use plant`), so tokens can never be stranded outside the pool accounting.
 - In **live** mode, `plant`/`uproot` freeze once the round's hour has closed
   (`now >= (hour+1)*3600`), so nobody can dodge (or enter before) the evaporation
   burn after the weather is public. Replay is exempt because its hours are
-  historical by design; `rain_dance` is never frozen.
+  historical by design; `rain_dance` is never frozen. If settlement is stuck for
+  over a day, `uproot(city, null)` still works as an exit hatch.
+- `new` validation also requires `decimals == 18`, `emission_per_round`,
+  `seed_amount` and `keeper_tip` ≤ 1M DRIZZLE, and (live) a `first_hour` within
+  one hour of the init block. Re-registering a previously seeded account charges
+  the bond minus the `seeded` entry it still has, so unregister → re-register
+  costs nothing beyond that one entry.
 
 ## Storage
 
@@ -132,10 +142,10 @@ Measured on `near-sandbox` by `tests/sandbox.rs` (mock OutLayer, so the
 
 | Scenario | `tick()` tx total | `on_weather` receipt |
 |---|---|---|
-| round 0: 12 pending sprout, 0 payouts | 9.428 Tgas | 4.683 Tgas |
-| round 1: 12 payouts, 1 planter | 10.448 Tgas | 5.683 Tgas |
-| round 2: same, 50 planters | 10.540 Tgas | 5.774 Tgas |
-| 2-city round (settle test) | 7.659–7.814 Tgas | 2.916–3.057 Tgas |
+| round 0: 12 pending sprout, 0 payouts | 9.430 Tgas | 4.684 Tgas |
+| round 1: 12 payouts, 1 planter | 10.450 Tgas | 5.684 Tgas |
+| round 2: same, 50 planters | 10.542 Tgas | 5.775 Tgas |
+| 2-city round (settle test) | 7.660–7.816 Tgas | 2.916–3.058 Tgas |
 
 `on_weather` is ~5.8 Tgas with every city paying out (well under the 15 Tgas
 budget and the 60 Tgas attached to the callback), and the 1-vs-50 comparison

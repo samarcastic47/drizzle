@@ -167,7 +167,7 @@ export interface ApiSelection {
 export function apiSelection(): ApiSelection {
   return {
     replayContract: process.env.NEXT_PUBLIC_REPLAY_CONTRACT || 'drizzle-replay.testnet',
-    liveContract: process.env.NEXT_PUBLIC_LIVE_CONTRACT || 'drizzle.testnet',
+    liveContract: process.env.NEXT_PUBLIC_LIVE_CONTRACT || 'drizzle-live.testnet',
     mock: process.env.NEXT_PUBLIC_MOCK === '1',
   };
 }

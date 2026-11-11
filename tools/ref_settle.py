@@ -29,6 +29,7 @@ EVAP_BPS = 10
 THRESHOLD_TENTHS = 2        # 0.2 mm
 CAP_TENTHS = 50             # 5.0 mm
 BPS_DENOM = 10_000
+DEAD_SHARES = 1_000_000_000_000  # unowned shares minted on every 1:1 (re)start
 START = 288                 # time[288] == 2026-09-24T00:00
 ROUNDS = 48
 U128_MAX = 2 ** 128 - 1
@@ -92,10 +93,10 @@ def settle_round(pools, mm_row, round_no):
             )
             if reset:
                 # Empty or worthless pool (price below 1e-6): old shares are dead,
-                # so burn the remaining dust and sprout 1:1.
+                # so burn the remaining dust and sprout 1:1 plus DEAD_SHARES.
                 outcome["burned"] += pool["value"]
                 pool["value"] = 0
-                pool["shares"] = 0
+                pool["shares"] = DEAD_SHARES
                 shares_out = pending_in
             else:
                 # Not resetting implies value * 1e6 >= shares.

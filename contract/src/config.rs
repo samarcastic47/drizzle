@@ -127,7 +127,26 @@ impl Config {
                 self.replay_hours, 0,
                 "config: live games need replay_hours == 0"
             );
+            // A live game starts now; a wrong first_hour would settle the wrong hour.
+            let now_hour = near_sdk::env::block_timestamp() / 1_000_000_000 / 3600;
+            assert!(
+                self.first_hour.abs_diff(now_hour) <= 1,
+                "config: live first_hour must be within 1 hour of now"
+            );
         }
+        let max_amount = 10u128.pow(24); // 1M DRIZZLE with 18 decimals
+        assert!(
+            self.emission_per_round.0 <= max_amount,
+            "config: emission_per_round must be <= 1M DRIZZLE"
+        );
+        assert!(
+            self.seed_amount.0 <= max_amount,
+            "config: seed_amount must be <= 1M DRIZZLE"
+        );
+        assert!(
+            self.keeper_tip.0 <= max_amount,
+            "config: keeper_tip must be <= 1M DRIZZLE"
+        );
         for (i, c) in self.cities.iter().enumerate() {
             assert!(
                 (-900_000..=900_000).contains(&c.lat_e4),

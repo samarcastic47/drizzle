@@ -48,8 +48,9 @@ pub const LIVE_GRACE_SECS: u64 = 120;
 /// share price and hand their value to the existing holders.
 pub const MIN_PLANT: u128 = 1_000_000_000_000_000_000;
 /// A plant must produce at least this many shares at the worst post-settlement
-/// price, so its owner cannot be rounded away.
-pub const MIN_SHARES_OUT: u128 = 1_000_000;
+/// price, so its owner cannot be rounded away. Dead shares keep the price sane;
+/// this only rejects a plant that would round to zero.
+pub const MIN_SHARES_OUT: u128 = 1;
 
 /// The one OutLayer request currently in flight.
 #[near(serializers = [borsh, json])]
@@ -264,7 +265,7 @@ impl Contract {
     pub fn uproot(&mut self, city: u8, shares: Option<U128>) -> U128 {
         assert_one_yocto();
         self.assert_city(city);
-        self.assert_round_open();
+        self.assert_uproot_open(shares);
         let account_id = env::predecessor_account_id();
         let key = (account_id.clone(), city);
         let mut position = self.users.get(&key).unwrap_or_default();
@@ -748,6 +749,23 @@ impl Contract {
         );
     }
 
+    /// `uproot(None)` may still exit in live mode if settlement is more than a day
+    /// late; entering and partial uproots stay frozen.
+    fn assert_uproot_open(&self, shares: Option<U128>) {
+        if self.cfg.replay {
+            return;
+        }
+        let close = (self.cfg.hour_for_round(self.next_round) + 1) * 3600;
+        let now = env::block_timestamp() / 1_000_000_000;
+        if now < close {
+            return;
+        }
+        require!(
+            shares.is_none() && now >= close.saturating_add(86_400),
+            "round closing: wait for settlement"
+        );
+    }
+
     /// Lazily converts settled pending into shares at the stored round ratio.
     /// Clears shares that belong to a previous city epoch (reset pools).
     fn sync_epoch(&self, position: &mut UserCity, city: u8) {
@@ -846,6 +864,18 @@ impl Contract {
         .emit();
     }
 
+    /// What an account must deposit to register: the full bond, minus the
+    /// `seeded` entry's stake when that entry already exists (it was paid once).
+    fn registration_min(&self, account_id: &AccountId) -> NearToken {
+        let mut min = self.storage_min();
+        if self.seeded.contains(account_id) {
+            min = min.saturating_sub(
+                env::storage_byte_cost().saturating_mul(self.seeded_storage as u128),
+            );
+        }
+        min
+    }
+
     /// Minimum storage bond: one FT account record plus 12 `UserCity` and 12
     /// bucket entries.
     fn storage_min(&self) -> NearToken {
@@ -859,7 +889,7 @@ impl Contract {
     /// Registers `account_id` when needed, enforcing (and refunding) the bond.
     fn deposit_registration(&mut self, account_id: &AccountId) {
         let amount = env::attached_deposit();
-        let min = self.storage_min();
+        let min = self.registration_min(account_id);
         if self.ft.accounts.contains_key(account_id) {
             if amount > NearToken::from_yoctonear(0) {
                 Promise::new(env::predecessor_account_id())
@@ -954,7 +984,7 @@ impl StorageManagement for Contract {
     ) -> StorageBalance {
         let amount = env::attached_deposit();
         let account_id = account_id.unwrap_or_else(env::predecessor_account_id);
-        let min = self.storage_min();
+        let min = self.registration_min(&account_id);
         if self.ft.accounts.contains_key(&account_id) {
             log!("The account is already registered, refunding the deposit");
             if amount > NearToken::from_yoctonear(0) {
@@ -976,8 +1006,10 @@ impl StorageManagement for Contract {
             }
         }
         let _ = registration_only;
+        // The account's balance view and the bounds stay at the full bond; only
+        // the charge skipped the retained `seeded` entry.
         StorageBalance {
-            total: min,
+            total: self.storage_min(),
             available: NearToken::from_yoctonear(0),
         }
     }
@@ -1302,10 +1334,10 @@ mod tests {
             "invariant 1: contract balance != sum(pool.value) + sum(pending_total)"
         );
 
-        let mut user_shares = 0u128;
-        for user in users {
-            for city in 0..NUM_CITIES {
-                let state = &c.cities[city];
+        for city in 0..NUM_CITIES {
+            let state = &c.cities[city];
+            let mut city_user_shares = 0u128;
+            for user in users {
                 let position = c
                     .users
                     .get(&(user.clone(), city as u8))
@@ -1325,11 +1357,19 @@ mod tests {
                         shares += pool::sprout_user(position.pending, ratio);
                     }
                 }
-                user_shares += shares;
+                city_user_shares += shares;
             }
+            assert!(
+                city_user_shares <= state.shares,
+                "city {city}: user shares {city_user_shares} > pool shares {}",
+                state.shares
+            );
+            let unowned = state.shares - city_user_shares;
+            assert!(
+                unowned == 0 || unowned == pool::DEAD_SHARES,
+                "city {city}: {unowned} unowned (non-dead) shares"
+            );
         }
-        let pool_shares: u128 = c.cities.iter().map(|city| city.shares).sum();
-        assert_eq!(user_shares, pool_shares, "shares in pools != shares in positions");
     }
 
     fn users() -> Vec<AccountId> {
@@ -1398,16 +1438,20 @@ mod tests {
         let node = &view.cities[0];
         assert_eq!(node.pending.0, 0, "pending sprouted");
         assert_eq!(node.shares.0, 100 * DEC, "sprout is 1:1 for an empty pool");
-        assert_eq!(
-            node.value.0,
-            100 * DEC,
-            "planting in round r must earn nothing from round r"
+        assert!(
+            node.value.0 <= 100 * DEC && node.value.0 + 2 * pool::DEAD_SHARES >= 100 * DEC,
+            "planting in round r must earn nothing from round r (got {})",
+            node.value.0
         );
 
         // The next rainy round does pay.
         settle(&mut c, &mm, GENESIS + 2 * ROUND_SECS, "alice.testnet");
         let node = &c.get_user(acct("alice.testnet")).cities[0];
-        assert_eq!(node.value.0, 200 * DEC, "alice earns the round-1 emission");
+        assert!(
+            node.value.0 <= 200 * DEC && node.value.0 + 2 * pool::DEAD_SHARES >= 200 * DEC,
+            "alice earns the round-1 emission (got {})",
+            node.value.0
+        );
         assert_invariants(&c, &u);
     }
 
@@ -1696,7 +1740,11 @@ mod tests {
         assert_eq!(node.pending.0, 0);
         assert_eq!(node.shares.0, 30 * DEC);
         assert_eq!(node.pending_round, None);
-        assert_eq!(node.value.0, 30 * DEC);
+        assert!(
+            node.value.0 <= 30 * DEC && node.value.0 + 2 * pool::DEAD_SHARES >= 30 * DEC,
+            "sprouted value should be ~30 DRIZZLE (got {})",
+            node.value.0
+        );
         assert_invariants(&c, &u);
     }
 
@@ -1759,17 +1807,19 @@ mod tests {
     #[test]
     fn live_rounds_are_due_after_the_hour_plus_grace() {
         reset_storage();
-        set_env("alice.testnet", 10_000_000, 0);
+        let now = 1_795_000_000u64;
+        set_env("alice.testnet", now, 0);
+        let hour = now / 3600;
         let mut cfg = test_config();
         cfg.replay = false;
         cfg.replay_hours = 0;
         cfg.round_seconds = 3600;
-        cfg.first_hour = 498_000;
+        cfg.first_hour = hour;
         let c = Contract::new(cfg);
         let state = c.get_round_state();
         // Live: (first_hour + round + 1) * 3600 + 120, independent of genesis_ts.
-        assert_eq!(state.due_at, (498_000 + 1) * 3600 + 120);
-        assert_eq!(state.next_hour, 498_000);
+        assert_eq!(state.due_at, (hour + 1) * 3600 + 120);
+        assert_eq!(state.next_hour, hour);
         assert_eq!(state.next_round, 0);
         assert!(state.now < state.due_at, "test clock must be before the due time");
     }
@@ -1784,7 +1834,7 @@ mod tests {
 
         // Live games have no loop.
         reset_storage();
-        set_env("alice.testnet", 10_000_000, 0);
+        set_env("alice.testnet", FIRST_HOUR * 3600 + 10, 0);
         let mut cfg = test_config();
         cfg.replay = false;
         cfg.replay_hours = 0;
@@ -1806,6 +1856,7 @@ mod tests {
         let mut cfg = test_config();
         cfg.replay = false;
         cfg.replay_hours = 0;
+        set_env("alice.testnet", FIRST_HOUR * 3600 + 10, 0);
         cfg.validate();
 
         // 100% evaporation would zero a pool while its shares still exist.
@@ -1829,6 +1880,38 @@ mod tests {
         let mut cfg = test_config();
         cfg.seed_amount = U128(MIN_PLANT - 1);
         assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+
+        // Caps: 1M DRIZZLE per mint field.
+        let cap = 10u128.pow(24);
+        let mut cfg = test_config();
+        cfg.emission_per_round = U128(cap + 1);
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+        let mut cfg = test_config();
+        cfg.seed_amount = U128(cap + 1);
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+        let mut cfg = test_config();
+        cfg.keeper_tip = U128(cap + 1);
+        assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+        let mut cfg = test_config();
+        cfg.emission_per_round = U128(cap);
+        cfg.validate();
+
+        // A live game must start in the current hour (+/- 1).
+        set_env("alice.testnet", FIRST_HOUR * 3600 + 10, 0);
+        for delta in [0u64, 1] {
+            let mut cfg = test_config();
+            cfg.replay = false;
+            cfg.replay_hours = 0;
+            cfg.first_hour = FIRST_HOUR + delta;
+            cfg.validate();
+        }
+        for delta in [2u64, 100] {
+            let mut cfg = test_config();
+            cfg.replay = false;
+            cfg.replay_hours = 0;
+            cfg.first_hour = FIRST_HOUR + delta;
+            assert!(std::panic::catch_unwind(|| cfg.validate()).is_err());
+        }
     }
 
     #[test]
@@ -1931,7 +2014,7 @@ mod tests {
         // Craft a pool whose shares are worth far more than a 1 DRIZZLE plant.
         plant(&mut c, "alice.testnet", 0, DEC, GENESIS + 2);
         settle(&mut c, &zero_mm(), GENESIS + ROUND_SECS, "alice.testnet");
-        c.cities[0].value = 10u128.pow(31);
+        c.cities[0].value = 10u128.pow(37);
 
         set_env("bob.testnet", GENESIS + 70, 1);
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1940,9 +2023,10 @@ mod tests {
         .unwrap_err();
         let message = panic_message(err);
         assert!(message.contains("share price too high"), "{message}");
+        let shares = c.cities[0].shares;
         assert!(message.contains(&format!(
             "plant at least {}",
-            pool::mul_div(MIN_SHARES_OUT, 10u128.pow(31) + 100 * DEC, DEC) + 1
+            pool::mul_div(MIN_SHARES_OUT, 10u128.pow(37) + 100 * DEC, shares) + 1
         )));
     }
 
@@ -2099,7 +2183,7 @@ mod tests {
 
         // Round 0 was the first (empty-pool) reset, round 2 the dust reset.
         assert_eq!(c.cities[0].epoch, 2);
-        assert_eq!(c.cities[0].shares, DEC);
+        assert_eq!(c.cities[0].shares, DEC + pool::DEAD_SHARES);
         assert_eq!(c.cities[0].value, DEC);
         assert_eq!(planters(&c, 0), 1, "only the new-epoch holder counts");
         assert_eq!(c.get_round_log(2).unwrap().burned[0].0, 500);
@@ -2115,7 +2199,11 @@ mod tests {
         // The new planter sprouted 1:1 at the reset.
         let bob = &c.get_user(acct("bob.testnet")).cities[0];
         assert_eq!(bob.shares.0, DEC);
-        assert_eq!(bob.value.0, DEC);
+        assert!(
+            bob.value.0 <= DEC && bob.value.0 + 2 * pool::DEAD_SHARES >= DEC,
+            "reset sprout is ~1:1 (got {})",
+            bob.value.0
+        );
 
         assert_eq!(uproot(&mut c, "bob.testnet", 0, None, GENESIS + 131), DEC);
         assert_eq!(planters(&c, 0), 0);
@@ -2171,7 +2259,7 @@ mod tests {
     #[test]
     fn live_mode_freezes_plant_and_uproot_after_the_hour_closes() {
         reset_storage();
-        set_env("alice.testnet", 1_799_000_000, 0);
+        set_env("alice.testnet", 500_000 * 3600 + 10, 0);
         let mut cfg = test_config();
         cfg.replay = false;
         cfg.replay_hours = 0;
@@ -2204,6 +2292,142 @@ mod tests {
         seed(&mut r, "alice.testnet", close);
         plant(&mut r, "alice.testnet", 0, DEC, close);
         assert_eq!(r.cities[0].pending_total, DEC);
+    }
+
+    // ------------------------------------------------------------ R1: dead shares
+
+    #[test]
+    fn sole_holder_cannot_lock_the_city_out_of_new_planters() {
+        let mut c = setup();
+        let u = users();
+        seed(&mut c, "alice.testnet", GENESIS);
+        seed(&mut c, "bob.testnet", GENESIS);
+        plant(&mut c, "alice.testnet", 0, 10 * DEC, GENESIS + 1);
+
+        let mut mm = zero_mm();
+        mm[0] = 10;
+        for round in 0..20u64 {
+            settle(
+                &mut c,
+                &mm,
+                GENESIS + ROUND_SECS * (round + 1),
+                "alice.testnet",
+            );
+            // Shrink the position to ~1 DRIZZLE of value, then self-dance.
+            let pool = c.cities[0].to_pool();
+            let keep = pool::mul_div(MIN_PLANT, pool.shares, pool.value) + 2;
+            let held = c.get_user(acct("alice.testnet")).cities[0].shares.0;
+            if keep < held {
+                uproot(
+                    &mut c,
+                    "alice.testnet",
+                    0,
+                    Some(held - keep),
+                    GENESIS + ROUND_SECS * (round + 1) + 1,
+                );
+            }
+            rain_dance(
+                &mut c,
+                "alice.testnet",
+                0,
+                DEC,
+                GENESIS + ROUND_SECS * (round + 1) + 2,
+            );
+            assert_invariants(&c, &u);
+        }
+
+        // The monopolist could not inflate the price past a 1 DRIZZLE plant.
+        let before = c.cities[0].pending_total;
+        plant(&mut c, "bob.testnet", 0, DEC, GENESIS + 2_000);
+        assert_eq!(c.cities[0].pending_total, before + DEC);
+        settle(&mut c, &mm, GENESIS + 2_100, "alice.testnet");
+        let bob = &c.get_user(acct("bob.testnet")).cities[0];
+        assert!(bob.shares.0 > 0, "the newcomer must receive shares");
+        assert_invariants(&c, &u);
+    }
+
+    // ------------------------------------------------------------ R2: exit hatch
+
+    #[test]
+    fn live_exit_is_allowed_after_one_day_of_missing_settlement() {
+        reset_storage();
+        set_env("alice.testnet", 500_000 * 3600 + 10, 0);
+        let mut cfg = test_config();
+        cfg.replay = false;
+        cfg.replay_hours = 0;
+        cfg.first_hour = 500_000;
+        let mut c = Contract::new(cfg);
+        let close = (500_000 + 1) * 3600;
+
+        let min = c.storage_balance_bounds().min.as_yoctonear();
+        set_env("alice.testnet", close - 1, min);
+        c.claim_seed();
+        set_env("alice.testnet", close - 1, 1);
+        c.plant(0, U128(DEC));
+
+        // One second too early: still frozen.
+        set_env("alice.testnet", close + 86_399, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.uproot(0, None);
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("round closing"));
+
+        // Partial uproots stay frozen even after the day.
+        set_env("alice.testnet", close + 86_400, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.uproot(0, Some(U128(1)));
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("round closing"));
+
+        // Planting stays frozen.
+        set_env("alice.testnet", close + 86_400, 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.plant(1, U128(DEC));
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("round closing"));
+
+        // The full exit works.
+        set_env("alice.testnet", close + 86_400, 1);
+        assert_eq!(c.uproot(0, None).0, DEC);
+    }
+
+    // ------------------------------------------------------------ R4: discount
+
+    #[test]
+    fn reregistration_does_not_recharge_the_seeded_entry() {
+        let mut c = setup();
+        let alice = acct("alice.testnet");
+        let full = c.storage_min().as_yoctonear();
+        let seeded_cost = env::storage_byte_cost().as_yoctonear() * c.seeded_storage as u128;
+        assert!(seeded_cost > 0);
+
+        seed(&mut c, "alice.testnet", GENESIS);
+        set_env("alice.testnet", GENESIS + 1, 1);
+        assert!(c.storage_unregister(Some(true)));
+        assert!(c.seeded.contains(&alice));
+
+        // Bounds stay at the full bond, but the charge skips the retained entry.
+        assert_eq!(c.storage_balance_bounds().min.as_yoctonear(), full);
+        assert_eq!(c.registration_min(&alice).as_yoctonear(), full - seeded_cost);
+
+        set_env("alice.testnet", GENESIS + 2, full - seeded_cost - 1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.storage_deposit(None, None);
+        }))
+        .unwrap_err();
+        assert!(panic_message(err).contains("minimum storage balance"));
+
+        set_env("alice.testnet", GENESIS + 2, full - seeded_cost);
+        let balance = c.storage_deposit(None, None);
+        assert_eq!(balance.total.as_yoctonear(), full);
+        assert!(c.storage_balance_of(alice.clone()).is_some());
+
+        set_env("alice.testnet", GENESIS + 3, 1);
+        assert!(c.storage_unregister(Some(true)));
+        assert!(c.seeded.contains(&alice));
     }
 
     #[test]

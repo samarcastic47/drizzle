@@ -12,6 +12,13 @@ uint::construct_uint! {
 /// Basis-point denominator.
 pub const BPS_DENOM: u128 = 10_000;
 
+/// Shares minted to nobody whenever a pool (re)starts 1:1.
+///
+/// They keep `pool.shares` from shrinking to dust, so a sole holder cannot inflate
+/// the share price by partial uproots and lock the city to new planters. Their
+/// value share is unowned: the last holder sweeps it, a reset burns it.
+pub const DEAD_SHARES: u128 = 1_000_000_000_000;
+
 /// Round parameters, mirrored from the contract config.
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
@@ -122,11 +129,12 @@ pub fn settle_round(
                 || pool.value.saturating_mul(1_000_000) < pool.shares;
             let shares_out = if reset {
                 // Empty or worthless pool (price below 1e-6): old shares are dead,
-                // so burn the remaining dust and start 1:1. The contract raises the
-                // city epoch so holders of the old shares can no longer uproot.
+                // so burn the remaining dust and start 1:1 (plus DEAD_SHARES, which
+                // keep a sole holder from inflating the price). The contract raises
+                // the city epoch so holders of the old shares can no longer uproot.
                 outcome.burned += pool.value;
                 pool.value = 0;
-                pool.shares = 0;
+                pool.shares = DEAD_SHARES;
                 pending_in
             } else {
                 // Not resetting means `pool.value * 1e6 >= pool.shares`, i.e.
@@ -480,7 +488,7 @@ mod tests {
         plant(&mut pool, 777);
         let outcome = settle_round(std::slice::from_mut(&mut pool), &[2], 0, &params());
         assert_eq!(outcome[0].sprout, Some((777, 777)));
-        assert_eq!(pool.shares, 777);
+        assert_eq!(pool.shares, DEAD_SHARES + 777);
         assert_eq!(pool.value, 777);
     }
 
@@ -494,7 +502,7 @@ mod tests {
         plant(&mut pool, 100);
         let outcome = settle_round(std::slice::from_mut(&mut pool), &[0], 0, &params());
         assert_eq!(outcome[0].sprout, Some((100, 100)));
-        assert_eq!(pool.shares, 100);
+        assert_eq!(pool.shares, DEAD_SHARES + 100);
         assert_eq!(pool.value, 100);
     }
 
@@ -525,7 +533,7 @@ mod tests {
         // The evaporation burn plus the reset burn add up to the whole value.
         assert_eq!(out[0].burned, value_before);
         assert_eq!(pools[0].value, DEC);
-        assert_eq!(pools[0].shares, DEC);
+        assert_eq!(pools[0].shares, DEAD_SHARES + DEC);
         assert_eq!(out[0].sprout, Some((DEC, DEC)));
     }
 

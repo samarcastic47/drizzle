@@ -351,7 +351,9 @@ async fn success_settles_cities_and_pays_planters() -> anyhow::Result<()> {
     let cities: Value = env.drizzle.view("get_cities").await?.json()?;
     assert_eq!(cities.as_array().unwrap().len(), NUM_CITIES);
     assert_eq!(cities[0]["value"], (50 * DEC).to_string());
-    assert_eq!(cities[0]["shares"], (50 * DEC).to_string());
+    // The 1:1 start also mints the unowned DEAD_SHARES.
+    const DEAD_SHARES: u128 = 1_000_000_000_000;
+    assert_eq!(cities[0]["shares"], (50 * DEC + DEAD_SHARES).to_string());
     assert_eq!(cities[0]["planters"], 1);
     assert_eq!(cities[0]["last_rain_round"], 0);
 
