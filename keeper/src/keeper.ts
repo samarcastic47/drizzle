@@ -14,11 +14,14 @@
  * credentials at all: it only issues view calls and logs what it would do.
  */
 
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Account, JsonRpcProvider, KeyPair, actions, type KeyPairString } from 'near-api-js';
+import { Account, JsonRpcProvider, KeyPair, actions, baseEncode, type KeyPairString } from 'near-api-js';
+import { InvalidNonceError, TransactionTimeoutError } from 'near-api-js/rpc-errors';
 
 import { decide, type ContractConfig, type RoundState } from './decide.js';
-import { parseEvents, txFailure } from './events.js';
+import { collectLogs, mergeEvents, parseEvents, txFailure, type ParsedEvents } from './events.js';
+import { formatNear, isoHour, isoSecond } from './format.js';
 import { configSchema, roundLogSchema, roundStateSchema } from './schema.js';
 import { oneLine, safeJson } from './text.js';
 
@@ -29,7 +32,6 @@ const SETTLE_TIMEOUT_MS = 120_000; // how long to wait for a round to settle
 const SETTLE_POLL_MS = 3_000;
 const BACKOFF_START_MS = 10_000;
 const BACKOFF_MAX_MS = 300_000;
-const YOCTO_PER_NEAR = 10n ** 24n;
 const WARN_BALANCE = 5n * 10n ** 23n; // 0.5 NEAR
 const STOP_BALANCE = 1n * 10n ** 23n; // 0.1 NEAR
 const DEFAULT_INTERVAL_SEC = 10;
@@ -95,23 +97,6 @@ function parseOrThrow<T>(schema: { parse(value: unknown): T }, raw: unknown, lab
   } catch (error) {
     throw new Error(`${label}: ${describeError(error)}`);
   }
-}
-
-/** yoctoNEAR → "12.345678" (6 decimals, truncated). */
-function formatNear(yocto: bigint): string {
-  const negative = yocto < 0n;
-  const abs = negative ? -yocto : yocto;
-  const whole = abs / YOCTO_PER_NEAR;
-  const frac = (abs % YOCTO_PER_NEAR) / 10n ** 18n;
-  return `${negative ? '-' : ''}${whole}.${frac.toString().padStart(6, '0')}`;
-}
-
-function isoSecond(unixSec: number): string {
-  return new Date(unixSec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
-function isoHour(unixSec: number): string {
-  return `${new Date(unixSec * 1000).toISOString().slice(0, 13)}:00Z`;
 }
 
 function nowSec(): number {
@@ -317,42 +302,118 @@ async function pause(ms: number): Promise<boolean> {
   }
 }
 
-async function waitForSettlement(
+interface Settlement {
+  result: TickResult;
+  error?: string;
+  events: ParsedEvents;
+}
+
+/**
+ * Sign `tick()` locally, so the tx hash is known even when the RPC gives up.
+ *
+ * Waiting for the *whole* transaction is a trap: OutLayer's yield only resolves
+ * when the TEE worker resumes it (10–60 s), so `send_tx` with `wait_until: FINAL`
+ * times out with `Timeout error [408]` even though the tick landed. We only wait
+ * for the first receipt (`EXECUTED_OPTIMISTIC`) and treat a 408 as "submitted,
+ * outcome unknown" — the round state poll decides what actually happened.
+ */
+async function submitTick(
+  account: Account,
   provider: Provider,
   contract: string,
+  deposit: bigint,
+): Promise<{ txHash: string; outcome: Awaited<ReturnType<Provider['sendTransactionUntil']>> | null }> {
+  const signedTx = await account.createSignedTransaction({
+    receiverId: contract,
+    actions: [actions.functionCall('tick', {}, TICK_GAS, deposit)],
+  });
+  // The hash is sha256 of the borsh-encoded signed transaction, base58.
+  const txHash = baseEncode(createHash('sha256').update(signedTx.encode()).digest());
+
+  try {
+    const outcome = await provider.sendTransactionUntil(signedTx, 'EXECUTED_OPTIMISTIC');
+    return { txHash, outcome };
+  } catch (error) {
+    if (error instanceof TransactionTimeoutError) return { txHash, outcome: null };
+    throw error;
+  }
+}
+
+/** Logs of the tick transaction, once the node knows them; null while unknown. */
+async function fetchTxEvents(provider: Provider, txHash: string, accountId: string): Promise<ParsedEvents | null> {
+  try {
+    const status = await provider.viewTransactionStatusWithReceipts({ txHash, accountId, waitUntil: 'NONE' });
+    return parseEvents(collectLogs(status));
+  } catch {
+    return null; // not submitted to this node yet, or still in the mempool
+  }
+}
+
+/**
+ * Poll the contract until the round settles (or its in-flight lock clears) and
+ * collect the drizzle events, which only appear once the OutLayer callback has
+ * run. Total budget: 120 s. After settlement we give the tx-status logs a short
+ * grace period (5 polls) and then stop.
+ */
+async function waitForTickOutcome(
+  provider: Provider,
+  contract: string,
+  accountId: string,
+  txHash: string,
   round: number,
-): Promise<{ result: TickResult; error?: string }> {
+  initialEvents: ParsedEvents,
+): Promise<Settlement> {
   const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+  let events = initialEvents;
+  let result: TickResult | null = null;
+  let error: string | undefined;
   let lastError: string | undefined;
+  let logDeadline = Number.POSITIVE_INFINITY;
 
   while (Date.now() < deadline) {
     if (!(await pause(SETTLE_POLL_MS))) {
-      return { result: 'timeout', error: 'keeper stopped while the round was in flight' };
-    }
-
-    let state: RoundState;
-    try {
-      state = await readRoundState(provider, contract);
-    } catch (error) {
-      lastError = describeError(error);
-      continue;
-    }
-
-    if (state.next_round > round) return { result: 'settled' };
-    if (!state.in_flight || state.in_flight.round !== round) {
       return {
-        result: 'failed',
-        error: `in_flight cleared but round ${round} did not settle (the oracle call failed)`,
+        result: result ?? 'timeout',
+        error: error ?? 'keeper stopped while the round was in flight',
+        events,
       };
     }
+
+    if (result === null) {
+      try {
+        const state = await readRoundState(provider, contract);
+        if (state.next_round > round) {
+          result = 'settled';
+          logDeadline = Date.now() + 5 * SETTLE_POLL_MS;
+        } else if (!state.in_flight || state.in_flight.round !== round) {
+          result = 'failed';
+          error = `in_flight cleared but round ${round} did not settle (the oracle call failed)`;
+          logDeadline = Date.now() + 5 * SETTLE_POLL_MS;
+        }
+      } catch (pollError) {
+        lastError = describeError(pollError);
+      }
+    }
+
+    if (events.rounds.length === 0 && events.failures.length === 0 && Date.now() <= logDeadline) {
+      const fromTx = await fetchTxEvents(provider, txHash, accountId);
+      if (fromTx) events = mergeEvents(events, fromTx);
+    }
+
+    const haveRoundEvent = events.rounds.length > 0 || events.failures.length > 0;
+    if (result !== null && (haveRoundEvent || Date.now() > logDeadline)) break;
   }
 
-  return {
-    result: 'timeout',
-    error: lastError
-      ? `settlement poll failed: ${lastError}`
-      : `no settlement after ${SETTLE_TIMEOUT_MS / 1000}s`,
-  };
+  if (result === null) {
+    return {
+      result: 'timeout',
+      error: lastError
+        ? `settlement poll failed: ${lastError}`
+        : `no settlement after ${SETTLE_TIMEOUT_MS / 1000}s`,
+      events,
+    };
+  }
+  return { result, error, events };
 }
 
 async function lookupRequestId(provider: Provider, contract: string, round: number): Promise<string | null> {
@@ -375,39 +436,28 @@ async function runTick(
   const round = state.next_round;
   const balanceBefore = await nearBalance(provider, account.accountId);
 
-  const outcome = await account.signAndSendTransaction({
-    receiverId: contract,
-    actions: [actions.functionCall('tick', {}, TICK_GAS, deposit)],
-    waitUntil: 'FINAL',
-    throwOnFailure: false,
-  });
+  const { txHash, outcome } = await submitTick(account, provider, contract, deposit);
+  const sentEvents = parseEvents(outcome ? collectLogs(outcome) : []);
+  const rejection = outcome ? txFailure(outcome.status) : undefined;
 
-  const txHash = outcome.transaction_outcome.id;
-  const logs = [
-    ...outcome.transaction_outcome.outcome.logs,
-    ...outcome.receipts_outcome.flatMap((receipt) => receipt.outcome.logs),
-  ];
-  const events = parseEvents(logs);
-  const failure = txFailure(outcome.status);
+  let settlement: Settlement;
+  if (rejection !== undefined) {
+    // The transaction itself was rejected (e.g. "round not due"): nothing to poll.
+    settlement = { result: 'failed', error: rejection, events: sentEvents };
+  } else {
+    if (!outcome) warn(`tick ${txHash} not confirmed by the RPC in time — polling the round state`);
+    settlement = await waitForTickOutcome(provider, contract, account.accountId, txHash, round, sentEvents);
+  }
+
+  const { result, events } = settlement;
+  let error = settlement.error;
+  if (result === 'failed' && rejection === undefined && events.failures.length > 0) {
+    error = events.failures[events.failures.length - 1].reason;
+  }
+
   if (events.rounds.length > 0) {
     const settled = events.rounds[events.rounds.length - 1];
-    debug(`drizzle_round event: round=${settled.round} mm_tenths=[${(settled.mm_tenths ?? []).join(',')}]`);
-  }
-
-  let result: TickResult;
-  let error: string | undefined;
-
-  if (failure !== undefined) {
-    result = 'failed';
-    error = failure;
-  } else {
-    const settlement = await waitForSettlement(provider, contract, round);
-    result = settlement.result;
-    error = settlement.error;
-  }
-
-  if (result === 'failed' && failure === undefined && events.failures.length > 0) {
-    error = events.failures[events.failures.length - 1].reason;
+    debug(`round event: round=${settled.round} mm_tenths=[${(settled.mm_tenths ?? []).join(',')}]`);
   }
 
   const requestId =
@@ -433,7 +483,8 @@ async function main(): Promise<number> {
 
   const credentials = options.dryRun ? null : requireCredentials();
   const provider = new JsonRpcProvider({ url: options.rpc }, { retries: 1, wait: 750, backoff: 2 });
-  const account = credentials ? new Account(credentials.accountId, provider, credentials.privateKey) : null;
+  // Rebuilt if a cached access-key nonce goes stale (another keeper sharing the key).
+  let account = credentials ? new Account(credentials.accountId, provider, credentials.privateKey) : null;
 
   // Process managers often escalate: `timeout 40` sends SIGINT *and* SIGTERM, and
   // a terminal Ctrl-C can be followed by SIGTERM. Treat any signal during shutdown
@@ -531,7 +582,17 @@ async function main(): Promise<number> {
       }
 
       if (!account) throw new Error('internal error: dry-run should have returned before signing');
-      const report = await runTick(account, provider, options.contract, config, state);
+      let report: TickReport;
+      try {
+        report = await runTick(account, provider, options.contract, config, state);
+      } catch (tickError) {
+        if (!(tickError instanceof InvalidNonceError) || !credentials) throw tickError;
+        // near-api-js caches nonces per key; a fresh Account re-reads them from chain.
+        warn('access-key nonce was stale — rebuilding the signer and retrying once');
+        account = new Account(credentials.accountId, provider, credentials.privateKey);
+        if (!(await pause(2_000))) break;
+        report = await runTick(account, provider, options.contract, config, state);
+      }
       totalSpent += report.spentYocto;
 
       const tickedAt = Date.now();

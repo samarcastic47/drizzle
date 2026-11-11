@@ -18,6 +18,28 @@ export interface ParsedEvents {
   requestId: string | null;
 }
 
+/** Structural subset of a transaction outcome (RPC `send_tx` / `EXPERIMENTAL_tx_status`). */
+interface LoggedOutcome {
+  transaction_outcome?: { outcome?: { logs?: readonly string[] } };
+  receipts_outcome?: Array<{ outcome?: { logs?: readonly string[] } }>;
+}
+
+/** Every log line produced by a transaction and the receipts it spawned. */
+export function collectLogs(outcome: LoggedOutcome): string[] {
+  const logs = [...(outcome.transaction_outcome?.outcome?.logs ?? [])];
+  for (const receipt of outcome.receipts_outcome ?? []) logs.push(...(receipt.outcome?.logs ?? []));
+  return logs;
+}
+
+/** Union of two parses of the same transaction (state logs and tx-status logs). */
+export function mergeEvents(a: ParsedEvents, b: ParsedEvents): ParsedEvents {
+  return {
+    rounds: [...a.rounds, ...b.rounds],
+    failures: [...a.failures, ...b.failures],
+    requestId: a.requestId ?? b.requestId,
+  };
+}
+
 function tryParseJson(text: string): unknown {
   try {
     return JSON.parse(text);
