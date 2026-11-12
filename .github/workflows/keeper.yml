@@ -41,4 +41,4 @@ jobs:
           NEAR_PRIVATE_KEY: ${{ secrets.NEAR_PRIVATE_KEY }}
         run: |
           # timeout exits 124 when time is up; that is the normal end of a run.
-          timeout --signal=INT 3480 node dist/keeper.js --contract ${{ matrix.contract }} --interval ${{ matrix.interval }} || { c=$?; [ "$c" -eq 124 ] || [ "$c" -eq 130 ]; }
+          timeout --signal=INT 3480 node dist/keeper.js --contract ${{ matrix.contract }} --interval ${{ matrix.interval }} --min-gap 60 || { c=$?; [ "$c" -eq 124 ] || [ "$c" -eq 130 ]; }

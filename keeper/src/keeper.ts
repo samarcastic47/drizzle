@@ -52,6 +52,7 @@ Options:
   --network <name>    testnet | mainnet            (default: testnet)
   --rpc <url>         custom NEAR RPC endpoint     (default: the network's public RPC)
   --interval <sec>    seconds between polls        (default: ${DEFAULT_INTERVAL_SEC})
+  --min-gap <sec>     minimum seconds between ticks (default: 0 = catch up back-to-back)
   --dry-run           views only: log what would happen, never sign
   --verbose           also log every poll, not just ticks and errors
   -h, --help          show this help
@@ -110,6 +111,7 @@ interface Options {
   network: string;
   rpc: string;
   intervalSec: number;
+  minGapSec: number;
   dryRun: boolean;
 }
 
@@ -121,6 +123,7 @@ function parseArgs(argv: string[]): Options {
   let rpc = '';
   let intervalSec = DEFAULT_INTERVAL_SEC;
   let dryRun = false;
+  let minGapSec = 0;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -161,6 +164,15 @@ function parseArgs(argv: string[]): Options {
         intervalSec = parsed;
         break;
       }
+      case '--min-gap': {
+        const raw = value();
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new UsageError(`--min-gap must be a number of seconds >= 0 (got "${raw}")`);
+        }
+        minGapSec = parsed;
+        break;
+      }
       case '--dry-run':
         dryRun = true;
         break;
@@ -178,7 +190,7 @@ function parseArgs(argv: string[]): Options {
     if (!rpc) throw new UsageError(`unknown network "${network}" — pass --rpc <url>`);
   }
 
-  return { contract, network, rpc, intervalSec, dryRun };
+  return { contract, network, rpc, intervalSec, minGapSec, dryRun };
 }
 
 /* --------------------------------------------------------------- credentials */
@@ -595,6 +607,7 @@ async function main(): Promise<number> {
 
       if (!account) throw new Error('internal error: dry-run should have returned before signing');
       let report: TickReport;
+      const tickStartedAt = Date.now();
       try {
         report = await runTick(account, provider, options.contract, config, state);
       } catch (tickError) {
@@ -626,8 +639,9 @@ async function main(): Promise<number> {
       if (report.result === 'settled') {
         log(parts.join(' '));
         backoffMs = BACKOFF_START_MS;
-        // Catch-up: no sleep here. The next iteration re-reads the state and ticks
-        // again immediately if another round is already due.
+        // Catch-up runs back-to-back unless --min-gap paces the spend.
+        const gapLeft = options.minGapSec * 1000 - (Date.now() - tickStartedAt);
+        if (gapLeft > 0 && !(await pause(gapLeft))) break;
         continue;
       }
 
