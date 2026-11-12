@@ -10,12 +10,12 @@ A NEP-141 token whose supply mints only when it rains in real cities. The weathe
 
 The demo uses the replay instance `drizzle-replay.testnet` (1 round = 60 s, looping a real week of historical weather). The live instance is `drizzle-live.testnet` (1 round = 1 real hour). Testnet NEAR is free from the faucet and the seed is never bought; a first claim attaches a 0.03199 NEAR storage bond, refunded by `storage_unregister` except the small retained seed entry.
 
-1. Open https://drizzle-wine.vercel.app → you see 12 city pins and a "next round in mm:ss" bar.
-2. Connect a testnet wallet → your account id and balance appear in the header.
-3. Click **Claim seed** → you see 100 DRIZZLE (once per account).
-4. Pick a city with rain in the forecast → **Plant 50** → your position shows "sprouting · after round N".
-5. Wait one round (60 s) → the feed shows "<city> N mm → +X DRIZZLE to planters" and "K cities dry → 0.10% evaporated"; your stake and shares change.
-6. Click **Verify** on a settled round → the drawer compares the on-chain `mm_tenths` with the same hour re-fetched from Open-Meteo in your browser and shows ✅ when all 12 match. It also shows the OutLayer request id. Because the jobs API is CORS-blocked from a static page (see [Trust model](#trust-model-and-known-limits)), resolve that id to a job id with the `curl` there and open `https://app.outlayer.ai/attestation/<job_id>?network=testnet`; for the recorded round it is https://app.outlayer.ai/attestation/57705?network=testnet, whose **Executed binary** is `7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b`, the hash pinned in the contract.
+1. Open https://drizzle-wine.vercel.app → you see 12 city plots (rain cloud or sun above each, crops sized by stake) and a round pill "Round N · m:ss".
+2. Click **Connect wallet** → your account and coin balance appear in the top bar.
+3. Click **Claim 100 seeds** → you see 100 DRIZZLE (once per account).
+4. Click a plot (e.g. one with a rain cloud) → chip **50** → **Plant 50 seeds** → a seed drops into the plot and it shows "sprouting".
+5. Wait one round (~60–90 s) → rain falls on wet plots with gold "+N" coins, dry plots show "−0.1%". Open **Rounds & rules** to read the same round as text.
+6. Click **Verify** on a settled round in **Rounds & rules** → the drawer compares the on-chain `mm_tenths` with the same hour re-fetched from Open-Meteo in your browser and shows ✅ when all 12 match. It also shows the OutLayer request id. Because the jobs API is CORS-blocked from a static page (see [Trust model](#trust-model-and-known-limits)), resolve that id to a job id with the `curl` there and open `https://app.outlayer.ai/attestation/<job_id>?network=testnet`; for the recorded round it is https://app.outlayer.ai/attestation/57705?network=testnet, whose **Executed binary** is `7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b`, the hash pinned in the contract.
 7. Prove there is no admin key:
 
    ```bash
@@ -58,7 +58,20 @@ The demo uses the replay instance `drizzle-replay.testnet` (1 round = 60 s, loop
 | Oracle code | `WasmUrl` pinned by sha256 `7d708ee751d708e8bfd331785204190e1741ed1ca0ce5f76dcf4317e75a7128b`, target `wasm32-wasip2` |
 | Oracle deposit / limits | 0.01 NEAR · 5·10⁹ instructions / 64 MB / 20 s |
 
-Everything is set in `new()` and returned by `get_config()`; there are no setters. Full method, view and event shapes: [docs/interface.md](docs/interface.md).
+Everything is set in `new()` and returned by `get_config()`; there are no setters.
+
+### Contract API
+
+| Change method | Deposit | Notes |
+|---|---|---|
+| `claim_seed()` | storage bond (0.03199 NEAR) if unregistered | mints 100 DRIZZLE once per account, ever |
+| `plant({city, amount})` | 1 yocto | min 1 DRIZZLE; sprouts after the next settlement; frozen in live mode once the hour closes |
+| `uproot({city, shares})` | 1 yocto | `shares: null` = everything, including unsprouted pending |
+| `rain_dance({city, amount})` | 1 yocto | burns into the city's jackpot |
+| `tick()` | `oracle.deposit` (0.01 NEAR) | anyone; requests the reading from OutLayer and pays +1 DRIZZLE on settlement |
+| NEP-141 / 145 / 148 | standard | `ft_transfer`, `ft_transfer_call`, `storage_deposit`, `storage_unregister`, `ft_metadata` |
+
+Views: `get_config`, `get_round_state`, `get_cities`, `get_user({account_id})`, `get_round_log({round})`, `get_round_logs({from, limit≤100})`, `get_stats`.
 
 ## Simulation on real weather
 
@@ -122,12 +135,12 @@ Known limits:
 
 | Path | What it is |
 |---|---|
-| [oracle/](oracle/) | WASI P2 module: one batched Open-Meteo request, stdin JSON → stdout JSON, echoed request id ([README](oracle/README.md)) |
-| [contract/](contract/) | NEP-141 contract, city pools, `tick` → OutLayer → `on_weather`; pure pool math, tests, init/deploy scripts ([README](contract/README.md)) |
-| [keeper/](keeper/) | Node/TypeScript tick loop anyone can run ([README](keeper/README.md)) |
-| [web/](web/) | Next.js static app: map, feed, wallet, Verify drawer |
+| [oracle/](oracle/) | WASI P2 module: one batched Open-Meteo request, stdin JSON → stdout JSON, echoed request id. Forked from [out-layer/weather-example](https://github.com/out-layer/weather-example) (MIT/Apache-2.0) |
+| [contract/](contract/) | NEP-141 contract, city pools, `tick` → OutLayer → `on_weather`; pure pool math, tests, init/deploy scripts |
+| [keeper/](keeper/) | Node/TypeScript tick loop anyone can run; [.github/workflows/keeper.yml](.github/workflows/keeper.yml) runs it hourly on GitHub Actions |
+| [web/](web/) | Next.js static app: farm board, wallet, round drawer, Verify |
 | [tools/](tools/) | `ref_settle.py` (Python reference for the pool math) and `supply_chart.py` (renders the chart) |
-| [docs/](docs/) | [interface.md](docs/interface.md), [supply.svg](docs/supply.svg), [notes/outlayer.md](docs/notes/outlayer.md) (verified OutLayer ABI, §11 live result) |
+| [docs/supply.svg](docs/supply.svg) | 60-day supply chart |
 | [sim.py](sim.py) | Supply simulator over [rain_60d.json](rain_60d.json) |
 
 ## Run locally
