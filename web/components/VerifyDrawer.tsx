@@ -13,6 +13,7 @@ import {
   nearblocksTxUrl,
   type OutlayerJob,
 } from '../lib/outlayer';
+import { CloseIcon } from './Sprites';
 
 type VerifyState =
   | { status: 'loading' }
@@ -86,142 +87,138 @@ export function VerifyDrawer() {
   const source = config?.oracle.source;
 
   return (
-    <div className="drawer-backdrop" onClick={closeVerify} role="presentation">
+    <div className="sheet-backdrop" onClick={closeVerify} role="presentation">
       <aside
-        className="drawer"
+        className="sheet verify-sheet"
         role="dialog"
         aria-modal="true"
         aria-label={`Verify round ${verify.round}`}
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="drawer-head">
+        <header className="sheet-head">
           <div>
-            <p className="eyebrow">verify</p>
-            <h2>Round {verify.round}</h2>
-            <p className="muted tiny">
+            <h2 className="sheet-title">Round {verify.round}</h2>
+            <p className="sheet-note small">
               {fmtHour(verify.hour * 3600)} · hour {hourIso} ·{' '}
               <a href={nearblocksBlockUrl(verify.tick_block_height)} target="_blank" rel="noreferrer">
                 tick block {verify.tick_block_height.toLocaleString('en-US')}
               </a>
             </p>
           </div>
-          <button className="btn btn-ghost" onClick={closeVerify} aria-label="Close verify drawer">
-            ✕
+          <button type="button" className="icon-btn" onClick={closeVerify} aria-label="Close verify panel">
+            <CloseIcon />
           </button>
         </header>
 
-        {state.status === 'loading' && <p className="muted">Re-fetching that hour from Open-Meteo…</p>}
-        {state.status === 'error' && (
-          <p className="form-error">
-            Open-Meteo re-fetch failed: {state.message}. The on-chain readings below still stand; Open-Meteo may
-            also have revised old hours.
-          </p>
-        )}
+        <div className="sheet-body">
+          {state.status === 'loading' && <p className="empty-line">Re-fetching that hour from Open-Meteo…</p>}
+          {state.status === 'error' && (
+            <p className="form-error">
+              Open-Meteo re-fetch failed: {state.message}. The on-chain readings still stand; Open-Meteo can also
+              revise an old hour.
+            </p>
+          )}
 
-        {state.status === 'ok' && (
-          <div className={`verify-banner ${allMatch ? 'is-ok' : 'is-warn'}`}>
-            {allMatch ? (
-              <>✅ all 12 match — the contract stored exactly what Open-Meteo returns for this hour</>
+          {state.status === 'ok' && (
+            <div className={`verify-banner ${allMatch ? 'is-ok' : 'is-warn'}`}>
+              {allMatch
+                ? 'All 12 match — the contract stored exactly what Open-Meteo returns for this hour.'
+                : `${mismatches} of 12 differ — Open-Meteo sometimes revises an hour after settlement; the oracle read it inside OutLayer at settlement time. Check the attestation below.`}
+            </div>
+          )}
+
+          <table className="verify-table">
+            <thead>
+              <tr>
+                <th>City</th>
+                <th>On-chain</th>
+                <th>Open-Meteo</th>
+                <th className="match-col">Check</th>
+              </tr>
+            </thead>
+            <tbody>
+              {config?.cities.map((city, index) => {
+                const onChain = verify.mm_tenths[index] ?? 0;
+                const reading = state.status === 'ok' ? state.readings[index] : null;
+                const match = reading ? reading.tenths === onChain : null;
+                return (
+                  <tr key={city.name}>
+                    <td>{cityName(index, city.name)}</td>
+                    <td className="num">{fmtMm(onChain)} mm</td>
+                    <td className="num">
+                      {reading ? `${reading.mm === null ? 'null → ' : ''}${fmtMm(reading.tenths)} mm` : '…'}
+                    </td>
+                    <td className={match === null ? '' : match ? 'is-match' : 'is-mismatch'}>
+                      {match === null ? '' : match ? 'match' : 'differs'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {state.status === 'ok' && (
+            <p className="sheet-note small break">
+              Same URL the oracle used: <code>{state.url}</code>
+            </p>
+          )}
+
+          <section className="attest">
+            <h3>OutLayer attestation</h3>
+            {!verify.outlayer_request_id ? (
+              <p className="sheet-note small">n/a — this round has no request id</p>
             ) : (
               <>
-                ⚠️ {mismatches} of 12 differ — Open-Meteo sometimes revises an hour after settlement, and the
-                oracle's reading was attested inside OutLayer at settlement time. Check the attestation below.
+                <p className="sheet-note small break">
+                  request <code>{verify.outlayer_request_id}</code> · keeper <code>{verify.keeper}</code>
+                </p>
+                {jobState.status === 'loading' && <p className="empty-line">Resolving the OutLayer job…</p>}
+                {jobState.status === 'found' && (
+                  <>
+                    <p className="sheet-note small">
+                      job <code>{jobState.job.jobId}</code>
+                    </p>
+                    <p className="sheet-note small">
+                      <a href={attestationUrl(jobState.job.jobId)} target="_blank" rel="noreferrer">
+                        open attestation ↗
+                      </a>
+                      {jobState.job.txHash && (
+                        <>
+                          {' · '}
+                          <a href={nearblocksTxUrl(jobState.job.txHash)} target="_blank" rel="noreferrer">
+                            request tx ↗
+                          </a>
+                        </>
+                      )}
+                    </p>
+                  </>
+                )}
+                {jobState.status === 'unresolved' && (
+                  <>
+                    <p className="sheet-note small">
+                      <a href={OUTLAYER_JOBS_URL} target="_blank" rel="noreferrer">
+                        OutLayer jobs explorer ↗
+                      </a>
+                    </p>
+                    <p className="sheet-note small">
+                      The job id cannot be resolved from this page: testnet-api.outlayer.ai only allows the origin
+                      app.outlayer.ai, so the browser blocks the lookup. The request id, tick block and pinned
+                      code hash are still checkable on-chain.
+                    </p>
+                  </>
+                )}
               </>
             )}
-          </div>
-        )}
+          </section>
 
-        <table className="verify-table">
-          <thead>
-            <tr>
-              <th>city</th>
-              <th>on-chain</th>
-              <th>Open-Meteo</th>
-              <th aria-label="match" />
-            </tr>
-          </thead>
-          <tbody>
-            {config?.cities.map((city, index) => {
-              const onChain = verify.mm_tenths[index] ?? 0;
-              const reading = state.status === 'ok' ? state.readings[index] : null;
-              const match = reading ? reading.tenths === onChain : null;
-              return (
-                <tr key={city.name}>
-                  <td>{cityName(index, city.name)}</td>
-                  <td className="mono">{fmtMm(onChain)} mm</td>
-                  <td className="mono">
-                    {reading ? `${reading.mm === null ? 'null → ' : ''}${fmtMm(reading.tenths)} mm` : '…'}
-                  </td>
-                  <td className={match === null ? '' : match ? 'is-match' : 'is-mismatch'}>
-                    {match === null ? '' : match ? '✓' : '✗'}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-
-        {state.status === 'ok' && (
-          <p className="muted tiny break">
-            same URL the oracle used: <code>{state.url}</code>
-          </p>
-        )}
-
-        <div className="attest">
-          <h3>OutLayer attestation</h3>
-          {!verify.outlayer_request_id ? (
-            <p className="muted tiny">n/a — this round has no request id</p>
-          ) : (
-            <>
-              <p className="tiny break">
-                request <code>{verify.outlayer_request_id}</code> · keeper <code>{verify.keeper}</code>
-              </p>
-              {jobState.status === 'loading' && <p className="muted tiny">resolving the OutLayer job…</p>}
-              {jobState.status === 'found' && (
-                <>
-                  <p className="tiny">
-                    job <code>{jobState.job.jobId}</code>
-                  </p>
-                  <p className="tiny">
-                    <a href={attestationUrl(jobState.job.jobId)} target="_blank" rel="noreferrer">
-                      open attestation ↗
-                    </a>
-                    {jobState.job.txHash && (
-                      <>
-                        {' · '}
-                        <a href={nearblocksTxUrl(jobState.job.txHash)} target="_blank" rel="noreferrer">
-                          Request tx ↗
-                        </a>
-                      </>
-                    )}
-                  </p>
-                </>
-              )}
-              {jobState.status === 'unresolved' && (
-                <>
-                  <p className="tiny">
-                    <a href={OUTLAYER_JOBS_URL} target="_blank" rel="noreferrer">
-                      OutLayer jobs explorer ↗
-                    </a>
-                  </p>
-                  <p className="muted tiny">
-                    job id not resolvable from this page: testnet-api.outlayer.ai only allows the origin
-                    app.outlayer.ai, so the browser blocks the jobs lookup. The request id, the tick block and the
-                    pinned code hash above are still checkable on-chain.
-                  </p>
-                </>
-              )}
-            </>
-          )}
-        </div>
-
-        <div className="attest">
-          <h3>Pinned code source</h3>
-          <pre className="code-block">{source ? JSON.stringify(source, null, 2) : 'unknown'}</pre>
-          <p className="muted tiny">
-            The contract pins this by WASM hash. OutLayer attests that exactly this binary ran inside an Intel TDX
-            enclave, and only the enclave callback can apply the readings.
-          </p>
+          <section className="attest">
+            <h3>Pinned code source</h3>
+            <pre className="code-block">{source ? JSON.stringify(source, null, 2) : 'unknown'}</pre>
+            <p className="sheet-note small">
+              The contract pins this by WASM hash. OutLayer attests that exactly this binary ran inside an Intel
+              TDX enclave, and only the enclave callback can apply the readings.
+            </p>
+          </section>
         </div>
       </aside>
     </div>
