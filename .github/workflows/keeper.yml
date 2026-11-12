@@ -1,5 +1,6 @@
 # Keeps both Drizzle contracts ticking without a machine that stays on.
-# Each run lasts ~58 minutes; a new run starts every hour. Anyone can also tick from the UI.
+# Each run lasts ~58 minutes, then re-dispatches itself (GitHub's cron is a backup:
+# it often doesn't fire on new repos). Anyone can also tick from the UI.
 name: keeper
 
 on:
@@ -10,6 +11,10 @@ on:
 concurrency:
   group: keeper
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   tick:
@@ -42,3 +47,13 @@ jobs:
         run: |
           # timeout exits 124 when time is up; that is the normal end of a run.
           timeout --signal=INT 3480 node dist/keeper.js --contract ${{ matrix.contract }} --interval ${{ matrix.interval }} --min-gap 60 || { c=$?; [ "$c" -eq 124 ] || [ "$c" -eq 130 ]; }
+
+  rearm:
+    needs: tick
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start the next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run keeper -R ${{ github.repository }} --ref main

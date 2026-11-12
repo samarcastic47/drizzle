@@ -25,6 +25,13 @@ A NEP-141 token on NEAR that mints only when it actually rains in 12 real cities
 
 **Why the weather can't be faked:** `tick()` calls OutLayer `request_execution` with a WASM pinned by sha256 (`7d708ee7…128b`), which the enclave checks before running. The result comes back through yield/resume to a `#[private]` callback that validates the hour and all 12 readings. Parameters are fixed in `new()` and have no setters.
 
+**Nobody can change the rules:** both contract accounts have zero access keys, so the code and parameters can never be upgraded, not even by us. Check it yourself:
+
+```bash
+near account list-keys drizzle-replay.testnet network-config testnet now   # → empty
+near account list-keys drizzle-live.testnet network-config testnet now     # → empty
+```
+
 ## Simulation: 60 days of real weather
 
 `sim.py` replays 1,440 real hours for 1,000 players. At 100/round emission and 0.10% evaporation, supply stays flat: **110,314** after 60 days, from 100,000. Herding into the wettest city loses money (47 per player); loyal planters end at 325.
