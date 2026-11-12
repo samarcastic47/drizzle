@@ -8,9 +8,9 @@ A NEP-141 token whose supply mints only when it rains in real cities. The weathe
 
 ## Try it in 2 minutes (testnet, no funds)
 
-The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s, looping a real week of historical weather). The live instance is `{{LIVE_CONTRACT}}` (1 round = 1 real hour). Testnet NEAR is free from the faucet and the seed is never bought; a first claim attaches a 0.03199 NEAR storage bond, refunded by `storage_unregister` except the small retained seed entry.
+The demo uses the replay instance `drizzle-replay.testnet` (1 round = 60 s, looping a real week of historical weather). The live instance is `drizzle-live.testnet` (1 round = 1 real hour). Testnet NEAR is free from the faucet and the seed is never bought; a first claim attaches a 0.03199 NEAR storage bond, refunded by `storage_unregister` except the small retained seed entry.
 
-1. Open {{DEMO_URL}} → you see 12 city pins and a "next round in mm:ss" bar.
+1. Open https://drizzle-wine.vercel.app → you see 12 city pins and a "next round in mm:ss" bar.
 2. Connect a testnet wallet → your account id and balance appear in the header.
 3. Click **Claim seed** → you see 100 DRIZZLE (once per account).
 4. Pick a city with rain in the forecast → **Plant 50** → your position shows "sprouting · after round N".
@@ -19,7 +19,7 @@ The demo uses the replay instance `{{REPLAY_CONTRACT}}` (1 round = 60 s, looping
 7. Prove there is no admin key:
 
    ```bash
-   near account list-keys {{REPLAY_CONTRACT}} network-config testnet now
+   near account list-keys drizzle-replay.testnet network-config testnet now
    ```
 
    → the list is empty.
@@ -135,7 +135,7 @@ Known limits:
 Toolchain: Rust 1.85.0 with `wasm32-wasip2` (near-sdk 5.24; newer SDKs need 1.95), cargo-near 0.23, near-cli-rs, the OutLayer CLI, wasmtime, Node 22+, pnpm.
 
 ```bash
-git clone {{REPO_URL}} && cd drizzle
+git clone https://github.com/samarcastic47/drizzle && cd drizzle
 ```
 
 **Oracle** — build, test the pure logic, and diff the wasm against a direct `curl` of the same Open-Meteo hour:
@@ -162,7 +162,7 @@ cargo near build non-reproducible-wasm
 cd keeper
 pnpm install && pnpm build
 export NEAR_ACCOUNT_ID=<account.testnet> NEAR_PRIVATE_KEY=ed25519:...
-pnpm start -- --contract {{REPLAY_CONTRACT}}
+pnpm start -- --contract drizzle-replay.testnet
 ```
 
 **Web** — mock mode needs no chain:
