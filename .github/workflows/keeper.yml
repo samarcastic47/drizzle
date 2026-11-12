@@ -1,0 +1,44 @@
+# Keeps both Drizzle contracts ticking without a machine that stays on.
+# Each run lasts ~58 minutes; a new run starts every hour. Anyone can also tick from the UI.
+name: keeper
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: keeper
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 62
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - contract: drizzle-replay.testnet
+            interval: 10
+          - contract: drizzle-live.testnet
+            interval: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build keeper
+        working-directory: keeper
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Run keeper for ~58 minutes
+        working-directory: keeper
+        env:
+          NEAR_ACCOUNT_ID: ${{ secrets.NEAR_ACCOUNT_ID }}
+          NEAR_PRIVATE_KEY: ${{ secrets.NEAR_PRIVATE_KEY }}
+        run: |
+          # timeout exits 124 when time is up; that is the normal end of a run.
+          timeout --signal=INT 3480 node dist/keeper.js --contract ${{ matrix.contract }} --interval ${{ matrix.interval }} || { c=$?; [ "$c" -eq 124 ] || [ "$c" -eq 130 ]; }
