@@ -31,13 +31,6 @@ A NEP-141 token on NEAR that mints only when it actually rains in 12 real cities
 
 ![Supply over 60 days](docs/supply.svg)
 
-## Limits
-
-- Testnet only. Seeds are one per account, so they aren't sybil-proof.
-- Replay uses historical hours, so they can be looked up in advance. The live contract is the real forecasting game.
-- Rounds settle only when someone calls `tick()`: the GitHub Actions keeper in `.github/workflows/keeper.yml`, or anyone from the UI.
-- You trust Intel TDX, OutLayer's workers and Open-Meteo's data.
-
 ## Run locally
 
 ```bash
